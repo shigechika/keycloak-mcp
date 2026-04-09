@@ -58,6 +58,10 @@ Infinispan-safe: does not create user sessions or use the userinfo endpoint.
 ## Setup
 
 ```bash
+# uv
+uv pip install keycloak-mcp
+
+# pip
 pip install keycloak-mcp
 ```
 
@@ -66,6 +70,11 @@ Or from source:
 ```bash
 git clone https://github.com/shigechika/keycloak-mcp.git
 cd keycloak-mcp
+
+# uv
+uv sync
+
+# pip
 pip install -e .
 ```
 
@@ -141,6 +150,13 @@ keycloak-mcp
 ```bash
 git clone https://github.com/shigechika/keycloak-mcp.git
 cd keycloak-mcp
+
+# uv
+uv sync --dev
+uv run pytest -v
+uv run ruff check .
+
+# pip
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -v
