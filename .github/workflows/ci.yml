@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/ruff-action@v3
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
   test:
     runs-on: ubuntu-latest
