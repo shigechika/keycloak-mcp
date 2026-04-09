@@ -62,6 +62,26 @@ class KeyCloakClient:
         """Get role mappings for a user."""
         return self._get(f"/users/{user_id}/role-mappings")
 
+    def get_user_groups(self, user_id: str) -> list[dict]:
+        """Get groups a user belongs to."""
+        return self._get(f"/users/{user_id}/groups")
+
+    # --- Brute Force ---
+
+    def get_brute_force_status(self, user_id: str) -> dict:
+        """Get brute force detection status for a user."""
+        return self._get(f"/attack-detection/brute-force/users/{user_id}")
+
+    # --- Groups ---
+
+    def list_groups(self, max_results: int = 100) -> list[dict]:
+        """List all groups."""
+        return self._get("/groups", {"max": max_results})
+
+    def get_group_members(self, group_id: str, max_results: int = 100) -> list[dict]:
+        """Get members of a group."""
+        return self._get(f"/groups/{group_id}/members", {"max": max_results})
+
     # --- Events ---
 
     def get_events(
@@ -72,7 +92,7 @@ class KeyCloakClient:
         date_to: str | None = None,
         max_results: int = 100,
     ) -> list[dict]:
-        """Get events with optional filters."""
+        """Get events with optional filters (single page)."""
         params: dict[str, Any] = {"max": max_results}
         if event_type:
             params["type"] = event_type
@@ -83,6 +103,33 @@ class KeyCloakClient:
         if date_to:
             params["dateTo"] = date_to
         return self._get("/events", params)
+
+    def get_events_all(
+        self,
+        event_type: str | None = None,
+        user: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Get all events with automatic pagination."""
+        params: dict[str, Any] = {"max": page_size, "first": 0}
+        if event_type:
+            params["type"] = event_type
+        if user:
+            params["user"] = user
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+        all_events: list[dict] = []
+        while True:
+            page = self._get("/events", params)
+            all_events.extend(page)
+            if len(page) < page_size:
+                break
+            params["first"] += page_size
+        return all_events
 
     # --- Sessions ---
 
@@ -99,6 +146,15 @@ class KeyCloakClient:
     def get_client(self, client_id: str) -> dict:
         """Get client by internal ID."""
         return self._get(f"/clients/{client_id}")
+
+    def get_client_by_client_id(self, client_id: str) -> dict | None:
+        """Get client by clientId (not internal UUID)."""
+        clients = self._get("/clients", {"clientId": client_id})
+        return clients[0] if clients else None
+
+    def get_client_sessions(self, internal_id: str, max_results: int = 100) -> list[dict]:
+        """Get active sessions for a client."""
+        return self._get(f"/clients/{internal_id}/user-sessions", {"max": max_results})
 
     # --- Roles ---
 

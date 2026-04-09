@@ -4,14 +4,23 @@ Uses Client Credentials Grant — no user password or TOTP required.
 Infinispan-safe: does not create user sessions or use userinfo endpoint.
 """
 
-import os
 import secrets
 import string
 from collections import Counter
+from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
 from .client import KeyCloakClient
+
+
+def _format_ts(epoch_ms: int | str) -> str:
+    """Convert epoch milliseconds to local datetime string."""
+    try:
+        ts = int(epoch_ms) / 1000
+        return datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, OSError):
+        return str(epoch_ms)
 
 mcp = FastMCP("keycloak-mcp")
 _client: KeyCloakClient | None = None
@@ -152,6 +161,80 @@ def get_user_sessions(username: str) -> str:
     return "\n".join(lines)
 
 
+# ---- Brute force tools ----
+
+
+@mcp.tool()
+def get_brute_force_status(username: str) -> str:
+    """Check if a user is temporarily locked due to brute force detection.
+
+    Args:
+        username: Exact username (email).
+    """
+    u = _kc().get_user_by_username(username)
+    if not u:
+        return f"User '{username}' not found"
+    status = _kc().get_brute_force_status(u["id"])
+    if not status or not status.get("numFailures"):
+        return f"User '{username}': no brute force events detected"
+    lines = [
+        f"Brute force status for {username}:",
+        f"  Failures: {status.get('numFailures', 0)}",
+        f"  Disabled: {status.get('disabled', False)}",
+        f"  Last failure: {_format_ts(status.get('lastFailure', 0))}",
+        f"  Last IP: {status.get('lastIPFailure', '')}",
+    ]
+    return "\n".join(lines)
+
+
+# ---- Group tools ----
+
+
+@mcp.tool()
+def list_user_groups(username: str) -> str:
+    """List groups a user belongs to.
+
+    Args:
+        username: Exact username (email).
+    """
+    u = _kc().get_user_by_username(username)
+    if not u:
+        return f"User '{username}' not found"
+    groups = _kc().get_user_groups(u["id"])
+    if not groups:
+        return f"User '{username}' belongs to no groups"
+    lines = [f"Groups for {username} ({len(groups)}):"]
+    for g in groups:
+        lines.append(f"  {g['name']}  path={g.get('path', '')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_users_by_group(group_name: str, max_results: int = 100) -> str:
+    """List all users in a group.
+
+    Args:
+        group_name: Group name (partial match).
+        max_results: Maximum results (default 100).
+    """
+    groups = _kc().list_groups()
+    matched = [g for g in groups if group_name.lower() in g.get("name", "").lower()]
+    if not matched:
+        return f"No group matching '{group_name}'"
+    group = matched[0]
+    members = _kc().get_group_members(group["id"], max_results)
+    if not members:
+        return f"No members in group '{group['name']}'"
+    lines = [f"Members of '{group['name']}' ({len(members)}):"]
+    for u in members:
+        lines.append(
+            f"  {u['username']:<40s}  "
+            f"{u.get('firstName', '')} {u.get('lastName', '')}  "
+            f"enabled={u.get('enabled', '')}"
+        )
+    return "\n".join(lines)
+
+
 # ---- Event tools ----
 
 
@@ -183,7 +266,7 @@ def get_events(
         return "No events found"
     lines = [f"Events ({len(events)}):"]
     for e in events:
-        ts = e.get("time", 0)
+        ts = _format_ts(e.get("time", 0))
         details = e.get("details", {})
         lines.append(
             f"  {ts}  {e['type']}  "
@@ -194,34 +277,130 @@ def get_events(
     return "\n".join(lines)
 
 
+def _fetch_login_events(date_from: str = "", date_to: str = "") -> tuple[list[dict], list[dict]]:
+    """Fetch all LOGIN and LOGIN_ERROR events with pagination."""
+    success = _kc().get_events_all("LOGIN", date_from=date_from or None, date_to=date_to or None)
+    failure = _kc().get_events_all("LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None)
+    return success, failure
+
+
 @mcp.tool()
-def get_login_stats(date_from: str = "", date_to: str = "", max_results: int = 1000) -> str:
-    """Get login success/failure statistics.
+def get_login_stats(date_from: str = "", date_to: str = "") -> str:
+    """Get login success/failure statistics with full pagination.
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for today.
-        date_to: End date (YYYY-MM-DD). Empty for today.
-        max_results: Maximum events to scan (default 1000).
+        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_to: End date (YYYY-MM-DD). Empty for all.
     """
-    success = _kc().get_events("LOGIN", date_from=date_from or None, date_to=date_to or None, max_results=max_results)
-    failure = _kc().get_events("LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None, max_results=max_results)
+    success, failure = _fetch_login_events(date_from, date_to)
 
     lines = [
-        f"Login statistics:",
+        "Login statistics:",
         f"  Success: {len(success)}",
         f"  Failure: {len(failure)}",
         f"  Total:   {len(success) + len(failure)}",
     ]
 
     if failure:
-        # Top failing users
         fail_users = Counter(
             e.get("details", {}).get("username", "unknown") for e in failure
         )
-        lines.append(f"\nTop failing users:")
+        lines.append("\nTop failing users:")
         for user, count in fail_users.most_common(10):
             lines.append(f"  {count:5d}  {user}")
 
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
+    """Get login statistics broken down by hour (local time).
+
+    Args:
+        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_to: End date (YYYY-MM-DD). Empty for all.
+    """
+    success, failure = _fetch_login_events(date_from, date_to)
+
+    success_by_hour: Counter[int] = Counter()
+    failure_by_hour: Counter[int] = Counter()
+    for e in success:
+        try:
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000).astimezone().hour
+            success_by_hour[hour] += 1
+        except (KeyError, ValueError, TypeError):
+            pass
+    for e in failure:
+        try:
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000).astimezone().hour
+            failure_by_hour[hour] += 1
+        except (KeyError, ValueError, TypeError):
+            pass
+
+    tz_name = datetime.now().astimezone().strftime("%Z")
+    lines = [f"Login statistics by hour ({tz_name}):", f"{'Hour':>6s}  {'Success':>8s}  {'Failure':>8s}  {'Total':>8s}"]
+    for h in range(24):
+        s, f = success_by_hour[h], failure_by_hour[h]
+        if s or f:
+            lines.append(f"  {h:02d}:00  {s:8d}  {f:8d}  {s + f:8d}")
+    total_s = sum(success_by_hour.values())
+    total_f = sum(failure_by_hour.values())
+    lines.append(f"  Total  {total_s:8d}  {total_f:8d}  {total_s + total_f:8d}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 20) -> str:
+    """Get login failure statistics broken down by source IP.
+
+    Args:
+        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_to: End date (YYYY-MM-DD). Empty for all.
+        top: Number of top IPs to show (default 20).
+    """
+    failure = _kc().get_events_all(
+        "LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None
+    )
+    if not failure:
+        return "No login failures found"
+
+    by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
+    lines = [f"Login failures by IP ({len(failure)} total, {len(by_ip)} unique IPs):"]
+    lines.append(f"  {'Count':>6s}  {'IP':<40s}  {'Last seen'}")
+    for ip, count in by_ip.most_common(top):
+        last = max(
+            (e.get("time", 0) for e in failure if e.get("ipAddress") == ip),
+            default=0,
+        )
+        lines.append(f"  {count:6d}  {ip:<40s}  {_format_ts(last)}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
+    """Get login statistics broken down by client (SP).
+
+    Args:
+        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_to: End date (YYYY-MM-DD). Empty for all.
+    """
+    success, failure = _fetch_login_events(date_from, date_to)
+
+    success_by_client: Counter[str] = Counter(
+        e.get("clientId", "unknown") for e in success
+    )
+    failure_by_client: Counter[str] = Counter(
+        e.get("clientId", "unknown") for e in failure
+    )
+
+    all_clients = sorted(set(success_by_client) | set(failure_by_client))
+    lines = ["Login statistics by client:", f"{'Client':<50s}  {'Success':>8s}  {'Failure':>8s}  {'Total':>8s}"]
+    for client in all_clients:
+        s, f = success_by_client[client], failure_by_client[client]
+        lines.append(f"  {client:<48s}  {s:8d}  {f:8d}  {s + f:8d}")
+    total_s = sum(success_by_client.values())
+    total_f = sum(failure_by_client.values())
+    lines.append(f"  {'Total':<48s}  {total_s:8d}  {total_f:8d}  {total_s + total_f:8d}")
     return "\n".join(lines)
 
 
@@ -246,7 +425,7 @@ def get_password_update_events(
     for e in events:
         details = e.get("details", {})
         lines.append(
-            f"  {e.get('time', '')}  {details.get('username', '')}  "
+            f"  {_format_ts(e.get('time', ''))}  {details.get('username', '')}  "
             f"ip={e.get('ipAddress', '')}  client={e.get('clientId', '')}"
         )
     return "\n".join(lines)
@@ -265,6 +444,30 @@ def get_session_stats() -> str:
     lines = [f"Active sessions: {total} total, {len(stats)} clients"]
     for s in sorted(stats, key=lambda x: -int(x.get("active", 0))):
         lines.append(f"  {int(s.get('active', 0)):5d}  {s['clientId']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_client_sessions(client_id: str, max_results: int = 100) -> str:
+    """Get active sessions for a specific client (SP).
+
+    Args:
+        client_id: Client ID (e.g., 'xflow', 'shadowserver').
+        max_results: Maximum results (default 100).
+    """
+    client = _kc().get_client_by_client_id(client_id)
+    if not client:
+        return f"Client '{client_id}' not found"
+    sessions = _kc().get_client_sessions(client["id"], max_results)
+    if not sessions:
+        return f"No active sessions for '{client_id}'"
+    lines = [f"Active sessions for '{client_id}' ({len(sessions)}):"]
+    for s in sessions:
+        lines.append(
+            f"  {s.get('username', ''):<40s}  "
+            f"ip={s.get('ipAddress', '')}  "
+            f"started={_format_ts(s.get('start', 0) * 1000)}"
+        )
     return "\n".join(lines)
 
 
