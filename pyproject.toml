@@ -4,9 +4,58 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keycloak-mcp"
-version = "0.1.0"
+dynamic = ["version"]
+description = "MCP server for KeyCloak Admin REST API via Service Account"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+authors = [
+    {name = "AIKAWA Shigechika"},
+]
+keywords = ["keycloak", "mcp", "model-context-protocol", "sso", "authentication"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "mcp>=1.0",
     "httpx",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "respx",
+    "ruff",
+]
+
+[project.scripts]
+keycloak-mcp = "keycloak_mcp.server:mcp.run"
+
+[project.urls]
+Homepage = "https://github.com/shigechika/keycloak-mcp"
+Repository = "https://github.com/shigechika/keycloak-mcp"
+Issues = "https://github.com/shigechika/keycloak-mcp/issues"
+
+[tool.setuptools]
+packages = ["keycloak_mcp"]
+
+[tool.setuptools.dynamic]
+version = {attr = "keycloak_mcp.__version__"}
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

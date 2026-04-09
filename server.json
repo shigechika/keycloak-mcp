@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.shigechika/keycloak-mcp",
+  "title": "KeyCloak MCP",
+  "description": "MCP server for KeyCloak Admin REST API via Service Account",
+  "repository": {
+    "url": "https://github.com/shigechika/keycloak-mcp",
+    "source": "github"
+  },
+  "version": "0.0.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "keycloak-mcp",
+      "version": "0.0.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
