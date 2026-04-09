@@ -158,7 +158,7 @@ uv run ruff check .
 
 # pip
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e . && .venv/bin/pip install pytest pytest-cov respx ruff
 .venv/bin/pytest -v
 .venv/bin/ruff check .
 ```

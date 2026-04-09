@@ -28,14 +28,6 @@ dependencies = [
     "httpx",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-cov",
-    "respx",
-    "ruff",
-]
-
 [project.scripts]
 keycloak-mcp = "keycloak_mcp.server:mcp.run"
 
@@ -43,6 +35,14 @@ keycloak-mcp = "keycloak_mcp.server:mcp.run"
 Homepage = "https://github.com/shigechika/keycloak-mcp"
 Repository = "https://github.com/shigechika/keycloak-mcp"
 Issues = "https://github.com/shigechika/keycloak-mcp/issues"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "respx",
+    "ruff",
+]
 
 [tool.setuptools]
 packages = ["keycloak_mcp"]
