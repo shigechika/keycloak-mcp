@@ -324,11 +324,13 @@ def get_events(
     lines = [f"Events ({len(events)}):"]
     for e in events:
         details = e.get("details", {})
+        error = e.get("error", "")
+        error_part = f"  error={error}" if error else ""
         lines.append(
             f"  {_format_ts(e.get('time', 0))}  {e['type']}  "
             f"user={details.get('username', e.get('userId', ''))}  "
             f"ip={_label_ip(e.get('ipAddress', ''))}  "
-            f"client={e.get('clientId', '')}"
+            f"client={e.get('clientId', '')}{error_part}"
         )
     return "\n".join(lines)
 
