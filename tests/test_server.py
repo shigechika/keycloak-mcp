@@ -109,7 +109,10 @@ class TestGetBruteForceStatus:
     def test_locked(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
         mock.return_value.get_brute_force_status.return_value = {
-            "numFailures": 5, "disabled": True, "lastFailure": 1700000000000, "lastIPFailure": "10.0.0.1"
+            "numFailures": 5,
+            "disabled": True,
+            "lastFailure": 1700000000000,
+            "lastIPFailure": "10.0.0.1",
         }
         result = server.get_brute_force_status("alice@example.com")
         assert "Failures: 5" in result
@@ -259,9 +262,7 @@ class TestGetPasswordUpdateEvents:
 class TestListClients:
     @patch.object(server, "_kc")
     def test_output(self, mock):
-        mock.return_value.list_clients.return_value = [
-            {"clientId": "xflow", "protocol": "saml", "enabled": True}
-        ]
+        mock.return_value.list_clients.return_value = [{"clientId": "xflow", "protocol": "saml", "enabled": True}]
         result = server.list_clients()
         assert "xflow" in result
         assert "saml" in result
@@ -270,9 +271,7 @@ class TestListClients:
 class TestGetRealmRoles:
     @patch.object(server, "_kc")
     def test_output(self, mock):
-        mock.return_value.get_realm_roles.return_value = [
-            {"name": "admin", "description": "Admin role"}
-        ]
+        mock.return_value.get_realm_roles.return_value = [{"name": "admin", "description": "Admin role"}]
         result = server.get_realm_roles()
         assert "admin" in result
 
@@ -309,9 +308,13 @@ class TestDetectLoginLoops:
         # Simulate 20 logins in 10 seconds for one user
         base_ts = 1700000000000
         events = [
-            {"type": "LOGIN", "time": base_ts + i * 500,
-             "details": {"username": "looper@example.com"},
-             "ipAddress": "10.0.0.1", "clientId": "app"}
+            {
+                "type": "LOGIN",
+                "time": base_ts + i * 500,
+                "details": {"username": "looper@example.com"},
+                "ipAddress": "10.0.0.1",
+                "clientId": "app",
+            }
             for i in range(20)
         ]
         mock.return_value.get_events_all.return_value = events
@@ -323,9 +326,13 @@ class TestDetectLoginLoops:
     def test_no_loop(self, mock):
         # 5 logins spread out — below threshold
         events = [
-            {"type": "LOGIN", "time": 1700000000000 + i * 60000,
-             "details": {"username": "normal@example.com"},
-             "ipAddress": "10.0.0.1", "clientId": "app"}
+            {
+                "type": "LOGIN",
+                "time": 1700000000000 + i * 60000,
+                "details": {"username": "normal@example.com"},
+                "ipAddress": "10.0.0.1",
+                "clientId": "app",
+            }
             for i in range(5)
         ]
         mock.return_value.get_events_all.return_value = events
@@ -339,11 +346,15 @@ class TestDetectLoginLoops:
         # 3 users with loops
         for u in range(3):
             for i in range(15):
-                events.append({
-                    "type": "LOGIN", "time": base_ts + i * 500,
-                    "details": {"username": f"user{u}@example.com"},
-                    "ipAddress": "10.0.0.1", "clientId": "app",
-                })
+                events.append(
+                    {
+                        "type": "LOGIN",
+                        "time": base_ts + i * 500,
+                        "details": {"username": f"user{u}@example.com"},
+                        "ipAddress": "10.0.0.1",
+                        "clientId": "app",
+                    }
+                )
         mock.return_value.get_events_all.return_value = events
         result = server.detect_login_loops(threshold=10, window_seconds=60, top=2)
         assert "3 user(s)" in result
@@ -361,9 +372,13 @@ class TestGetEventsUsernameFilter:
     def test_resolves_username_to_id(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
         mock.return_value.get_events.return_value = [
-            {"type": "LOGIN", "time": 1700000000000,
-             "details": {"username": "alice@example.com"},
-             "ipAddress": "10.0.0.1", "clientId": "app"}
+            {
+                "type": "LOGIN",
+                "time": 1700000000000,
+                "details": {"username": "alice@example.com"},
+                "ipAddress": "10.0.0.1",
+                "clientId": "app",
+            }
         ]
         server.get_events(event_type="LOGIN", username="alice@example.com")
         # Verify get_events was called with user ID, not username
@@ -382,10 +397,20 @@ class TestGetEventsIpFilter:
     @patch.object(server, "_kc")
     def test_filters_by_ip(self, mock):
         mock.return_value.get_events.return_value = [
-            {"type": "LOGIN", "time": 1700000000000,
-             "details": {"username": "alice"}, "ipAddress": "10.0.0.1", "clientId": "app"},
-            {"type": "LOGIN", "time": 1700000001000,
-             "details": {"username": "bob"}, "ipAddress": "10.0.0.2", "clientId": "app"},
+            {
+                "type": "LOGIN",
+                "time": 1700000000000,
+                "details": {"username": "alice"},
+                "ipAddress": "10.0.0.1",
+                "clientId": "app",
+            },
+            {
+                "type": "LOGIN",
+                "time": 1700000001000,
+                "details": {"username": "bob"},
+                "ipAddress": "10.0.0.2",
+                "clientId": "app",
+            },
         ]
         result = server.get_events(ip_address="10.0.0.1")
         assert "alice" in result
@@ -397,8 +422,7 @@ class TestGetUserSessionsFormatted:
     def test_formatted_output(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
         mock.return_value.get_user_sessions.return_value = [
-            {"clients": {"c1": "xflow", "c2": "zabbix"},
-             "start": 1700000, "ipAddress": "10.0.0.1"}
+            {"clients": {"c1": "xflow", "c2": "zabbix"}, "start": 1700000, "ipAddress": "10.0.0.1"}
         ]
         result = server.get_user_sessions("alice@example.com")
         assert "xflow" in result

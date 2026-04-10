@@ -23,6 +23,7 @@ def _format_ts(epoch_ms: int | str) -> str:
     except (ValueError, TypeError, OSError):
         return str(epoch_ms)
 
+
 mcp = FastMCP("keycloak-mcp")
 _client: KeyCloakClient | None = None
 _sites: SiteClassifier | None = None
@@ -267,9 +268,7 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
     lines = [f"Members of '{group['name']}' ({len(members)}):"]
     for u in members:
         lines.append(
-            f"  {u['username']:<40s}  "
-            f"{u.get('firstName', '')} {u.get('lastName', '')}  "
-            f"enabled={u.get('enabled', '')}"
+            f"  {u['username']:<40s}  {u.get('firstName', '')} {u.get('lastName', '')}  enabled={u.get('enabled', '')}"
         )
     return "\n".join(lines)
 
@@ -360,9 +359,7 @@ def get_login_stats(date_from: str = "", date_to: str = "") -> str:
     ]
 
     if failure:
-        fail_users = Counter(
-            e.get("details", {}).get("username", "unknown") for e in failure
-        )
+        fail_users = Counter(e.get("details", {}).get("username", "unknown") for e in failure)
         lines.append("\nTop failing users:")
         for user, count in fail_users.most_common(10):
             lines.append(f"  {count:5d}  {user}")
@@ -416,9 +413,7 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
         date_to: End date (YYYY-MM-DD). Empty for all.
         top: Number of top IPs to show (default 20).
     """
-    failure = _kc().get_events_all(
-        "LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None
-    )
+    failure = _kc().get_events_all("LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None)
     if not failure:
         return "No login failures found"
 
@@ -445,12 +440,8 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
     """
     success, failure = _fetch_login_events(date_from, date_to)
 
-    success_by_client: Counter[str] = Counter(
-        e.get("clientId", "unknown") for e in success
-    )
-    failure_by_client: Counter[str] = Counter(
-        e.get("clientId", "unknown") for e in failure
-    )
+    success_by_client: Counter[str] = Counter(e.get("clientId", "unknown") for e in success)
+    failure_by_client: Counter[str] = Counter(e.get("clientId", "unknown") for e in failure)
 
     all_clients = sorted(set(success_by_client) | set(failure_by_client))
     lines = ["Login statistics by client:", f"{'Client':<50s}  {'Success':>8s}  {'Failure':>8s}  {'Total':>8s}"]
@@ -483,9 +474,7 @@ def detect_login_loops(
         window_seconds: Time window in seconds (default 60).
         top: Number of top users to show (default 20). Use 0 for all.
     """
-    events = _kc().get_events_all(
-        "LOGIN", date_from=date_from or None, date_to=date_to or None
-    )
+    events = _kc().get_events_all("LOGIN", date_from=date_from or None, date_to=date_to or None)
     if not events:
         return "No LOGIN events found"
 
@@ -524,14 +513,16 @@ def detect_login_loops(
             # Find most common IP and client for this user
             ips = Counter(e.get("ipAddress", "") for e in user_events)
             clients = Counter(e.get("clientId", "") for e in user_events)
-            loops.append((
-                username,
-                max_count,
-                duration_s,
-                avg_interval,
-                ips.most_common(1)[0][0],
-                clients.most_common(1)[0][0],
-            ))
+            loops.append(
+                (
+                    username,
+                    max_count,
+                    duration_s,
+                    avg_interval,
+                    ips.most_common(1)[0][0],
+                    clients.most_common(1)[0][0],
+                )
+            )
 
     if not loops:
         return f"No login loops detected (threshold={threshold}, window={window_seconds}s)"
@@ -548,16 +539,13 @@ def detect_login_loops(
     ]
     for username, count, duration, avg_interval, ip, client in loops:
         lines.append(
-            f"  {username:<40s}  {count:5d}  {duration:8.1f}s  {avg_interval:10.2f}s  "
-            f"{_label_ip(ip):<40s}  {client}"
+            f"  {username:<40s}  {count:5d}  {duration:8.1f}s  {avg_interval:10.2f}s  {_label_ip(ip):<40s}  {client}"
         )
     return "\n".join(lines)
 
 
 @mcp.tool()
-def get_password_update_events(
-    date_from: str = "", date_to: str = "", max_results: int = 100
-) -> str:
+def get_password_update_events(date_from: str = "", date_to: str = "", max_results: int = 100) -> str:
     """Get password update events.
 
     Args:

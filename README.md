@@ -42,7 +42,7 @@ Infinispan-safe: does not create user sessions or use the userinfo endpoint.
 
 | Tool | Description |
 |------|-------------|
-| `get_events` | Get events with filters (type, username, client, IP, date). Resolves username to user ID automatically |
+| `get_events` | Get events with filters (type, username, client, IP, date). Resolves username to user ID automatically. Shows KeyCloak's ``error`` field for failure events (e.g. ``invalid_user_credentials``, ``user_temporarily_disabled``) |
 | `get_login_stats` | Login success/failure statistics with full pagination |
 | `get_login_stats_by_hour` | Login statistics by hour (local time) |
 | `get_login_stats_by_client` | Login statistics by client (SP) |

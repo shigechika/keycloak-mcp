@@ -9,17 +9,13 @@ from .conftest import ADMIN_BASE, SAMPLE_USER, SAMPLE_USER_2
 
 class TestCountUsers:
     def test_returns_count(self, mock_api):
-        mock_api.get(f"{ADMIN_BASE}/users/count").mock(
-            return_value=httpx.Response(200, json=42)
-        )
+        mock_api.get(f"{ADMIN_BASE}/users/count").mock(return_value=httpx.Response(200, json=42))
         assert KeyCloakClient().count_users() == 42
 
 
 class TestSearchUsers:
     def test_returns_list(self, mock_api):
-        mock_api.get(f"{ADMIN_BASE}/users").mock(
-            return_value=httpx.Response(200, json=[SAMPLE_USER])
-        )
+        mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[SAMPLE_USER]))
         result = KeyCloakClient().search_users("alice")
         assert len(result) == 1
         assert result[0]["username"] == "alice@example.com"
@@ -27,25 +23,19 @@ class TestSearchUsers:
 
 class TestGetUserByUsername:
     def test_found(self, mock_api):
-        mock_api.get(f"{ADMIN_BASE}/users").mock(
-            return_value=httpx.Response(200, json=[SAMPLE_USER])
-        )
+        mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[SAMPLE_USER]))
         result = KeyCloakClient().get_user_by_username("alice@example.com")
         assert result is not None
         assert result["id"] == "user-uuid-1"
 
     def test_not_found(self, mock_api):
-        mock_api.get(f"{ADMIN_BASE}/users").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+        mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[]))
         assert KeyCloakClient().get_user_by_username("nobody") is None
 
 
 class TestResetPassword:
     def test_success(self, mock_api):
-        mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1/reset-password").mock(
-            return_value=httpx.Response(204)
-        )
+        mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1/reset-password").mock(return_value=httpx.Response(204))
         status = KeyCloakClient().reset_password("user-uuid-1", "newpass")
         assert status == 204
 
@@ -53,9 +43,7 @@ class TestResetPassword:
 class TestGetUserGroups:
     def test_returns_groups(self, mock_api):
         groups = [{"id": "g1", "name": "vpn-admin", "path": "/vpn-admin"}]
-        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1/groups").mock(
-            return_value=httpx.Response(200, json=groups)
-        )
+        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1/groups").mock(return_value=httpx.Response(200, json=groups))
         result = KeyCloakClient().get_user_groups("user-uuid-1")
         assert len(result) == 1
         assert result[0]["name"] == "vpn-admin"
@@ -75,9 +63,7 @@ class TestBruteForce:
 class TestListGroups:
     def test_returns_groups(self, mock_api):
         groups = [{"id": "g1", "name": "admins"}, {"id": "g2", "name": "users"}]
-        mock_api.get(f"{ADMIN_BASE}/groups").mock(
-            return_value=httpx.Response(200, json=groups)
-        )
+        mock_api.get(f"{ADMIN_BASE}/groups").mock(return_value=httpx.Response(200, json=groups))
         result = KeyCloakClient().list_groups()
         assert len(result) == 2
 
@@ -94,9 +80,7 @@ class TestGetGroupMembers:
 class TestGetEvents:
     def test_with_filters(self, mock_api):
         events = [{"type": "LOGIN", "time": 1700000000000, "ipAddress": "10.0.0.1", "clientId": "app"}]
-        mock_api.get(f"{ADMIN_BASE}/events").mock(
-            return_value=httpx.Response(200, json=events)
-        )
+        mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=events))
         result = KeyCloakClient().get_events(event_type="LOGIN", date_from="2024-01-01")
         assert len(result) == 1
         assert result[0]["type"] == "LOGIN"
@@ -105,9 +89,7 @@ class TestGetEvents:
 class TestGetEventsAll:
     def test_single_page(self, mock_api):
         events = [{"type": "LOGIN", "time": 1700000000000}]
-        mock_api.get(f"{ADMIN_BASE}/events").mock(
-            return_value=httpx.Response(200, json=events)
-        )
+        mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=events))
         result = KeyCloakClient().get_events_all("LOGIN", page_size=1000)
         assert len(result) == 1
 
@@ -127,17 +109,13 @@ class TestGetEventsAll:
 class TestGetClientByClientId:
     def test_found(self, mock_api):
         client = {"id": "internal-uuid", "clientId": "xflow", "protocol": "saml"}
-        mock_api.get(f"{ADMIN_BASE}/clients").mock(
-            return_value=httpx.Response(200, json=[client])
-        )
+        mock_api.get(f"{ADMIN_BASE}/clients").mock(return_value=httpx.Response(200, json=[client]))
         result = KeyCloakClient().get_client_by_client_id("xflow")
         assert result is not None
         assert result["id"] == "internal-uuid"
 
     def test_not_found(self, mock_api):
-        mock_api.get(f"{ADMIN_BASE}/clients").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+        mock_api.get(f"{ADMIN_BASE}/clients").mock(return_value=httpx.Response(200, json=[]))
         assert KeyCloakClient().get_client_by_client_id("nonexistent") is None
 
 
@@ -154,9 +132,7 @@ class TestGetClientSessions:
 class TestGetSessionStats:
     def test_returns_stats(self, mock_api):
         stats = [{"clientId": "xflow", "active": 5}, {"clientId": "zabbix", "active": 2}]
-        mock_api.get(f"{ADMIN_BASE}/client-session-stats").mock(
-            return_value=httpx.Response(200, json=stats)
-        )
+        mock_api.get(f"{ADMIN_BASE}/client-session-stats").mock(return_value=httpx.Response(200, json=stats))
         result = KeyCloakClient().get_session_stats()
         assert len(result) == 2
 
@@ -164,18 +140,14 @@ class TestGetSessionStats:
 class TestListClients:
     def test_returns_clients(self, mock_api):
         clients = [{"clientId": "xflow", "protocol": "saml", "enabled": True}]
-        mock_api.get(f"{ADMIN_BASE}/clients").mock(
-            return_value=httpx.Response(200, json=clients)
-        )
+        mock_api.get(f"{ADMIN_BASE}/clients").mock(return_value=httpx.Response(200, json=clients))
         result = KeyCloakClient().list_clients()
         assert len(result) == 1
 
 
 class TestLogoutUser:
     def test_success(self, mock_api):
-        mock_api.delete(f"{ADMIN_BASE}/users/user-uuid-1/sessions").mock(
-            return_value=httpx.Response(204)
-        )
+        mock_api.delete(f"{ADMIN_BASE}/users/user-uuid-1/sessions").mock(return_value=httpx.Response(204))
         status = KeyCloakClient().logout_user("user-uuid-1")
         assert status == 204
 
@@ -183,9 +155,7 @@ class TestLogoutUser:
 class TestGetEventsWithClientId:
     def test_client_id_param(self, mock_api):
         events = [{"type": "LOGIN", "time": 1700000000000, "clientId": "xflow"}]
-        route = mock_api.get(f"{ADMIN_BASE}/events").mock(
-            return_value=httpx.Response(200, json=events)
-        )
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=events))
         result = KeyCloakClient().get_events(event_type="LOGIN", client_id="xflow")
         assert len(result) == 1
         # Verify client param was sent
@@ -195,8 +165,6 @@ class TestGetEventsWithClientId:
 class TestGetRealmRoles:
     def test_returns_roles(self, mock_api):
         roles = [{"name": "admin", "description": "Admin role"}]
-        mock_api.get(f"{ADMIN_BASE}/roles").mock(
-            return_value=httpx.Response(200, json=roles)
-        )
+        mock_api.get(f"{ADMIN_BASE}/roles").mock(return_value=httpx.Response(200, json=roles))
         result = KeyCloakClient().get_realm_roles()
         assert len(result) == 1
