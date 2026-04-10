@@ -275,3 +275,155 @@ class TestGetRealmRoles:
         ]
         result = server.get_realm_roles()
         assert "admin" in result
+
+
+class TestLogoutUser:
+    @patch.object(server, "_kc")
+    def test_success(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_sessions.return_value = [
+            {"clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+        ]
+        mock.return_value.logout_user.return_value = 204
+        result = server.logout_user("alice@example.com")
+        assert "Logged out" in result
+        assert "1 session(s)" in result
+
+    @patch.object(server, "_kc")
+    def test_no_sessions(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_sessions.return_value = []
+        result = server.logout_user("alice@example.com")
+        assert "nothing to do" in result
+
+    @patch.object(server, "_kc")
+    def test_user_not_found(self, mock):
+        mock.return_value.get_user_by_username.return_value = None
+        result = server.logout_user("nobody")
+        assert "not found" in result
+
+
+class TestDetectLoginLoops:
+    @patch.object(server, "_kc")
+    def test_detects_loop(self, mock):
+        # Simulate 20 logins in 10 seconds for one user
+        base_ts = 1700000000000
+        events = [
+            {"type": "LOGIN", "time": base_ts + i * 500,
+             "details": {"username": "looper@example.com"},
+             "ipAddress": "10.0.0.1", "clientId": "app"}
+            for i in range(20)
+        ]
+        mock.return_value.get_events_all.return_value = events
+        result = server.detect_login_loops(threshold=10, window_seconds=60)
+        assert "1 user(s)" in result
+        assert "looper@example.com" in result
+
+    @patch.object(server, "_kc")
+    def test_no_loop(self, mock):
+        # 5 logins spread out — below threshold
+        events = [
+            {"type": "LOGIN", "time": 1700000000000 + i * 60000,
+             "details": {"username": "normal@example.com"},
+             "ipAddress": "10.0.0.1", "clientId": "app"}
+            for i in range(5)
+        ]
+        mock.return_value.get_events_all.return_value = events
+        result = server.detect_login_loops(threshold=10, window_seconds=60)
+        assert "No login loops" in result
+
+    @patch.object(server, "_kc")
+    def test_top_limit(self, mock):
+        base_ts = 1700000000000
+        events = []
+        # 3 users with loops
+        for u in range(3):
+            for i in range(15):
+                events.append({
+                    "type": "LOGIN", "time": base_ts + i * 500,
+                    "details": {"username": f"user{u}@example.com"},
+                    "ipAddress": "10.0.0.1", "clientId": "app",
+                })
+        mock.return_value.get_events_all.return_value = events
+        result = server.detect_login_loops(threshold=10, window_seconds=60, top=2)
+        assert "3 user(s)" in result
+        assert "showing top 2" in result
+
+    @patch.object(server, "_kc")
+    def test_empty_events(self, mock):
+        mock.return_value.get_events_all.return_value = []
+        result = server.detect_login_loops()
+        assert "No LOGIN events" in result
+
+
+class TestGetEventsUsernameFilter:
+    @patch.object(server, "_kc")
+    def test_resolves_username_to_id(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_events.return_value = [
+            {"type": "LOGIN", "time": 1700000000000,
+             "details": {"username": "alice@example.com"},
+             "ipAddress": "10.0.0.1", "clientId": "app"}
+        ]
+        result = server.get_events(event_type="LOGIN", username="alice@example.com")
+        # Verify get_events was called with user ID, not username
+        mock.return_value.get_events.assert_called_once()
+        call_kwargs = mock.return_value.get_events.call_args
+        assert call_kwargs[1].get("user") == "user-uuid-1" or call_kwargs.kwargs.get("user") == "user-uuid-1"
+
+    @patch.object(server, "_kc")
+    def test_username_not_found(self, mock):
+        mock.return_value.get_user_by_username.return_value = None
+        result = server.get_events(username="nobody")
+        assert "not found" in result
+
+
+class TestGetEventsIpFilter:
+    @patch.object(server, "_kc")
+    def test_filters_by_ip(self, mock):
+        mock.return_value.get_events.return_value = [
+            {"type": "LOGIN", "time": 1700000000000,
+             "details": {"username": "alice"}, "ipAddress": "10.0.0.1", "clientId": "app"},
+            {"type": "LOGIN", "time": 1700000001000,
+             "details": {"username": "bob"}, "ipAddress": "10.0.0.2", "clientId": "app"},
+        ]
+        result = server.get_events(ip_address="10.0.0.1")
+        assert "alice" in result
+        assert "bob" not in result
+
+
+class TestGetUserSessionsFormatted:
+    @patch.object(server, "_kc")
+    def test_formatted_output(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_sessions.return_value = [
+            {"clients": {"c1": "xflow", "c2": "zabbix"},
+             "start": 1700000, "ipAddress": "10.0.0.1"}
+        ]
+        result = server.get_user_sessions("alice@example.com")
+        assert "xflow" in result
+        assert "zabbix" in result
+        # Should show formatted timestamp, not raw epoch
+        assert "1700000000" not in result
+
+
+class TestLabelIp:
+    @patch.object(server, "_site_classifier")
+    def test_with_site(self, mock_sc):
+        mock_sc.return_value.available = True
+        mock_sc.return_value.classify.return_value = "Faculty of Law"
+        result = server._label_ip("10.0.1.5")
+        assert "Faculty of Law" in result
+
+    @patch.object(server, "_site_classifier")
+    def test_external(self, mock_sc):
+        mock_sc.return_value.available = True
+        mock_sc.return_value.classify.return_value = None
+        result = server._label_ip("8.8.8.8")
+        assert "external" in result
+
+    @patch.object(server, "_site_classifier")
+    def test_no_classifier(self, mock_sc):
+        mock_sc.return_value.available = False
+        result = server._label_ip("10.0.1.5")
+        assert result == "10.0.1.5"

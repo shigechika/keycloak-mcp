@@ -20,7 +20,8 @@ Infinispan-safe: does not create user sessions or use the userinfo endpoint.
 | `get_user` | Get detailed user information by username |
 | `reset_password` | Reset a user's password |
 | `reset_passwords_batch` | Reset passwords for multiple users from CSV |
-| `get_user_sessions` | Get active sessions for a user |
+| `get_user_sessions` | Get active sessions for a user (local time) |
+| `logout_user` | Force logout a user by removing all sessions |
 
 ### Group Management
 
@@ -34,14 +35,15 @@ Infinispan-safe: does not create user sessions or use the userinfo endpoint.
 | Tool | Description |
 |------|-------------|
 | `get_brute_force_status` | Check if a user is locked by brute force detection |
-| `get_login_failures_by_ip` | Login failure statistics by source IP |
+| `get_login_failures_by_ip` | Login failure statistics by source IP (with site labels) |
+| `detect_login_loops` | Detect users with rapid repeated logins (redirect loop detection) |
 
 ### Event Analytics
 
 | Tool | Description |
 |------|-------------|
-| `get_events` | Get KeyCloak events with filters (type, user, date) |
-| `get_login_stats` | Login success/failure statistics with pagination |
+| `get_events` | Get events with filters (type, username, client, IP, date). Resolves username to user ID automatically |
+| `get_login_stats` | Login success/failure statistics with full pagination |
 | `get_login_stats_by_hour` | Login statistics by hour (local time) |
 | `get_login_stats_by_client` | Login statistics by client (SP) |
 | `get_password_update_events` | Password update event history |
@@ -88,6 +90,7 @@ Set the following environment variables:
 | `KEYCLOAK_REALM` | Realm name | `master` |
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
+| `KEYCLOAK_SITES_INI` | Path to INI file for IP-to-site classification (optional) | — |
 
 ### KeyCloak Client Setup
 

@@ -171,6 +171,27 @@ class TestListClients:
         assert len(result) == 1
 
 
+class TestLogoutUser:
+    def test_success(self, mock_api):
+        mock_api.delete(f"{ADMIN_BASE}/users/user-uuid-1/sessions").mock(
+            return_value=httpx.Response(204)
+        )
+        status = KeyCloakClient().logout_user("user-uuid-1")
+        assert status == 204
+
+
+class TestGetEventsWithClientId:
+    def test_client_id_param(self, mock_api):
+        events = [{"type": "LOGIN", "time": 1700000000000, "clientId": "xflow"}]
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(
+            return_value=httpx.Response(200, json=events)
+        )
+        result = KeyCloakClient().get_events(event_type="LOGIN", client_id="xflow")
+        assert len(result) == 1
+        # Verify client param was sent
+        assert "client" in str(route.calls[0].request.url)
+
+
 class TestGetRealmRoles:
     def test_returns_roles(self, mock_api):
         roles = [{"name": "admin", "description": "Admin role"}]

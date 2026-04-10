@@ -12,6 +12,7 @@ from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 
 from .client import KeyCloakClient
+from .sites import SiteClassifier
 
 
 def _format_ts(epoch_ms: int | str) -> str:
@@ -24,6 +25,7 @@ def _format_ts(epoch_ms: int | str) -> str:
 
 mcp = FastMCP("keycloak-mcp")
 _client: KeyCloakClient | None = None
+_sites: SiteClassifier | None = None
 
 
 def _kc() -> KeyCloakClient:
@@ -32,6 +34,23 @@ def _kc() -> KeyCloakClient:
     if _client is None:
         _client = KeyCloakClient()
     return _client
+
+
+def _site_classifier() -> SiteClassifier:
+    """Lazy-initialize the site classifier."""
+    global _sites
+    if _sites is None:
+        _sites = SiteClassifier()
+    return _sites
+
+
+def _label_ip(ip: str) -> str:
+    """Return IP with site label if available."""
+    sc = _site_classifier()
+    if not sc.available:
+        return ip
+    site = sc.classify(ip)
+    return f"{ip} ({site})" if site else f"{ip} (external)"
 
 
 # ---- User tools ----
@@ -81,7 +100,7 @@ def get_user(username: str) -> str:
         f"Name: {u.get('firstName', '')} {u.get('lastName', '')}",
         f"Email: {u.get('email', '')}",
         f"Enabled: {u.get('enabled', '')}",
-        f"Created: {u.get('createdTimestamp', '')}",
+        f"Created: {_format_ts(u.get('createdTimestamp', ''))}",
     ]
     return "\n".join(lines)
 
@@ -154,11 +173,31 @@ def get_user_sessions(username: str) -> str:
         return f"No active sessions for {username}"
     lines = [f"Active sessions for {username}: {len(sessions)}"]
     for s in sessions:
+        clients = s.get("clients", {})
+        client_names = ", ".join(clients.values()) if clients else "none"
         lines.append(
-            f"  client={s.get('clients', {})}, started={s.get('start', '')}, "
-            f"ip={s.get('ipAddress', '')}"
+            f"  clients=[{client_names}]  "
+            f"started={_format_ts(s.get('start', 0) * 1000)}  "
+            f"ip={_label_ip(s.get('ipAddress', ''))}"
         )
     return "\n".join(lines)
+
+
+@mcp.tool()
+def logout_user(username: str) -> str:
+    """Force logout a user by removing all their active sessions.
+
+    Args:
+        username: Exact username (email).
+    """
+    u = _kc().get_user_by_username(username)
+    if not u:
+        return f"User '{username}' not found"
+    sessions = _kc().get_user_sessions(u["id"])
+    if not sessions:
+        return f"No active sessions for {username} — nothing to do"
+    _kc().logout_user(u["id"])
+    return f"Logged out {username} ({len(sessions)} session(s) removed)"
 
 
 # ---- Brute force tools ----
@@ -182,7 +221,7 @@ def get_brute_force_status(username: str) -> str:
         f"  Failures: {status.get('numFailures', 0)}",
         f"  Disabled: {status.get('disabled', False)}",
         f"  Last failure: {_format_ts(status.get('lastFailure', 0))}",
-        f"  Last IP: {status.get('lastIPFailure', '')}",
+        f"  Last IP: {_label_ip(status.get('lastIPFailure', ''))}",
     ]
     return "\n".join(lines)
 
@@ -242,6 +281,8 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
 def get_events(
     event_type: str = "",
     username: str = "",
+    client_id: str = "",
+    ip_address: str = "",
     date_from: str = "",
     date_to: str = "",
     max_results: int = 50,
@@ -249,29 +290,44 @@ def get_events(
     """Get KeyCloak events with optional filters.
 
     Args:
-        event_type: Event type filter (e.g., LOGIN, LOGIN_ERROR, UPDATE_PASSWORD, REGISTER).
-        username: Filter by username.
+        event_type: Event type filter (e.g., LOGIN, LOGIN_ERROR, UPDATE_PASSWORD).
+        username: Filter by exact username (email). Resolved to user ID internally.
+        client_id: Filter by client ID (SP name).
+        ip_address: Filter events by source IP (client-side filter).
         date_from: Start date (YYYY-MM-DD).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 50).
     """
+    # Resolve username to user ID for the KeyCloak API
+    user_id = None
+    if username:
+        u = _kc().get_user_by_username(username)
+        if not u:
+            return f"User '{username}' not found"
+        user_id = u["id"]
+
     events = _kc().get_events(
         event_type=event_type or None,
-        user=username or None,
+        user=user_id,
+        client_id=client_id or None,
         date_from=date_from or None,
         date_to=date_to or None,
         max_results=max_results,
     )
+
+    # Client-side IP filter
+    if ip_address:
+        events = [e for e in events if e.get("ipAddress") == ip_address]
+
     if not events:
         return "No events found"
     lines = [f"Events ({len(events)}):"]
     for e in events:
-        ts = _format_ts(e.get("time", 0))
         details = e.get("details", {})
         lines.append(
-            f"  {ts}  {e['type']}  "
+            f"  {_format_ts(e.get('time', 0))}  {e['type']}  "
             f"user={details.get('username', e.get('userId', ''))}  "
-            f"ip={e.get('ipAddress', '')}  "
+            f"ip={_label_ip(e.get('ipAddress', ''))}  "
             f"client={e.get('clientId', '')}"
         )
     return "\n".join(lines)
@@ -366,13 +422,14 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
 
     by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
     lines = [f"Login failures by IP ({len(failure)} total, {len(by_ip)} unique IPs):"]
-    lines.append(f"  {'Count':>6s}  {'IP':<40s}  {'Last seen'}")
+    lines.append(f"  {'Count':>6s}  {'IP':<40s}  {'Site':<16s}  {'Last seen'}")
     for ip, count in by_ip.most_common(top):
         last = max(
             (e.get("time", 0) for e in failure if e.get("ipAddress") == ip),
             default=0,
         )
-        lines.append(f"  {count:6d}  {ip:<40s}  {_format_ts(last)}")
+        site = _site_classifier().classify(ip) or "external"
+        lines.append(f"  {count:6d}  {ip:<40s}  {site:<16s}  {_format_ts(last)}")
     return "\n".join(lines)
 
 
@@ -405,18 +462,111 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
 
 
 @mcp.tool()
+def detect_login_loops(
+    date_from: str = "",
+    date_to: str = "",
+    threshold: int = 10,
+    window_seconds: int = 60,
+    top: int = 20,
+) -> str:
+    """Detect users with rapid repeated logins (possible redirect loops).
+
+    Scans all LOGIN events and finds users who logged in more than `threshold`
+    times within `window_seconds`.
+
+    Args:
+        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_to: End date (YYYY-MM-DD). Empty for all.
+        threshold: Minimum logins within the window to flag (default 10).
+        window_seconds: Time window in seconds (default 60).
+        top: Number of top users to show (default 20). Use 0 for all.
+    """
+    events = _kc().get_events_all(
+        "LOGIN", date_from=date_from or None, date_to=date_to or None
+    )
+    if not events:
+        return "No LOGIN events found"
+
+    # Group events by username
+    by_user: dict[str, list[dict]] = {}
+    for e in events:
+        username = e.get("details", {}).get("username", "")
+        if username:
+            by_user.setdefault(username, []).append(e)
+
+    # Detect loops: sliding window
+    loops: list[tuple[str, int, float, float, str, str]] = []
+    for username, user_events in by_user.items():
+        timestamps = sorted(int(e.get("time", 0)) for e in user_events)
+        if len(timestamps) < threshold:
+            continue
+
+        # Find the densest window
+        max_count = 0
+        best_start = 0
+        best_end = 0
+        window_ms = window_seconds * 1000
+        j = 0
+        for i in range(len(timestamps)):
+            while j < len(timestamps) and timestamps[j] - timestamps[i] <= window_ms:
+                j += 1
+            count = j - i
+            if count > max_count:
+                max_count = count
+                best_start = timestamps[i]
+                best_end = timestamps[j - 1]
+
+        if max_count >= threshold:
+            duration_s = (best_end - best_start) / 1000
+            avg_interval = duration_s / (max_count - 1) if max_count > 1 else 0
+            # Find most common IP and client for this user
+            ips = Counter(e.get("ipAddress", "") for e in user_events)
+            clients = Counter(e.get("clientId", "") for e in user_events)
+            loops.append((
+                username,
+                max_count,
+                duration_s,
+                avg_interval,
+                ips.most_common(1)[0][0],
+                clients.most_common(1)[0][0],
+            ))
+
+    if not loops:
+        return f"No login loops detected (threshold={threshold}, window={window_seconds}s)"
+
+    loops.sort(key=lambda x: -x[1])
+    total_loop_users = len(loops)
+    if top > 0:
+        loops = loops[:top]
+    lines = [
+        f"Login loops detected: {total_loop_users} user(s) "
+        f"(threshold={threshold}, window={window_seconds}s, showing top {len(loops)})",
+        "",
+        f"  {'User':<40s}  {'Count':>5s}  {'Duration':>10s}  {'Avg interval':>12s}  {'IP':<40s}  {'Client'}",
+    ]
+    for username, count, duration, avg_interval, ip, client in loops:
+        lines.append(
+            f"  {username:<40s}  {count:5d}  {duration:8.1f}s  {avg_interval:10.2f}s  "
+            f"{_label_ip(ip):<40s}  {client}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def get_password_update_events(
-    date_from: str = "", max_results: int = 100
+    date_from: str = "", date_to: str = "", max_results: int = 100
 ) -> str:
     """Get password update events.
 
     Args:
         date_from: Start date (YYYY-MM-DD).
+        date_to: End date (YYYY-MM-DD). Empty for all.
         max_results: Maximum results (default 100).
     """
     events = _kc().get_events(
         "UPDATE_PASSWORD",
         date_from=date_from or None,
+        date_to=date_to or None,
         max_results=max_results,
     )
     if not events:
@@ -426,7 +576,7 @@ def get_password_update_events(
         details = e.get("details", {})
         lines.append(
             f"  {_format_ts(e.get('time', ''))}  {details.get('username', '')}  "
-            f"ip={e.get('ipAddress', '')}  client={e.get('clientId', '')}"
+            f"ip={_label_ip(e.get('ipAddress', ''))}  client={e.get('clientId', '')}"
         )
     return "\n".join(lines)
 
@@ -465,7 +615,7 @@ def get_client_sessions(client_id: str, max_results: int = 100) -> str:
     for s in sessions:
         lines.append(
             f"  {s.get('username', ''):<40s}  "
-            f"ip={s.get('ipAddress', '')}  "
+            f"ip={_label_ip(s.get('ipAddress', ''))}  "
             f"started={_format_ts(s.get('start', 0) * 1000)}"
         )
     return "\n".join(lines)

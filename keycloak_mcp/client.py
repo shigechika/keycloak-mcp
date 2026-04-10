@@ -28,6 +28,13 @@ class KeyCloakClient:
         resp.raise_for_status()
         return resp.status_code
 
+    def _delete(self, path: str) -> int:
+        """DELETE request to Admin API. Returns status code."""
+        url = f"{self.auth.admin_base}{path}"
+        resp = self._http.delete(url, headers=self.auth.headers())
+        resp.raise_for_status()
+        return resp.status_code
+
     # --- Users ---
 
     def count_users(self) -> int:
@@ -57,6 +64,10 @@ class KeyCloakClient:
     def get_user_sessions(self, user_id: str) -> list[dict]:
         """Get active sessions for a user."""
         return self._get(f"/users/{user_id}/sessions")
+
+    def logout_user(self, user_id: str) -> int:
+        """Remove all sessions for a user (force logout)."""
+        return self._delete(f"/users/{user_id}/sessions")
 
     def get_user_roles(self, user_id: str) -> dict:
         """Get role mappings for a user."""
@@ -88,6 +99,7 @@ class KeyCloakClient:
         self,
         event_type: str | None = None,
         user: str | None = None,
+        client_id: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         max_results: int = 100,
@@ -98,6 +110,8 @@ class KeyCloakClient:
             params["type"] = event_type
         if user:
             params["user"] = user
+        if client_id:
+            params["client"] = client_id
         if date_from:
             params["dateFrom"] = date_from
         if date_to:
