@@ -365,7 +365,7 @@ class TestGetEventsUsernameFilter:
              "details": {"username": "alice@example.com"},
              "ipAddress": "10.0.0.1", "clientId": "app"}
         ]
-        result = server.get_events(event_type="LOGIN", username="alice@example.com")
+        server.get_events(event_type="LOGIN", username="alice@example.com")
         # Verify get_events was called with user ID, not username
         mock.return_value.get_events.assert_called_once()
         call_kwargs = mock.return_value.get_events.call_args
