@@ -98,6 +98,32 @@ Set the following environment variables:
 2. Enable **Client authentication** and **Service account roles**
 3. Assign realm roles: `view-users`, `view-events`, `view-clients`, `manage-users` (for password reset)
 
+### IP-to-Site Classification (optional)
+
+Set `KEYCLOAK_SITES_INI` to the path of an INI file that maps CIDR ranges to
+site names. When configured, tools that display IP addresses
+(`get_user_sessions`, `get_events`, `get_login_failures_by_ip`, etc.) annotate
+each IP with its site; unmatched IPs are labeled `external`. If the variable is
+unset or the file is missing, IPs are shown without labels.
+
+See [`sites.ini.example`](sites.ini.example) for the format:
+
+```ini
+[hq]
+name = HQ (Tokyo)
+ipv4 = 192.0.2.0/24, 198.51.100.0/24
+ipv6 = 2001:db8:1::/48
+
+[vpn]
+name = VPN
+ipv4 = 10.0.0.0/8, 172.16.0.0/12
+```
+
+Each `[section]` defines one site. `name` is the display label (defaults to the
+section name). `ipv4` and `ipv6` take comma-separated CIDRs; a single host is
+`/32` or `/128`. Ranges are matched in file order, so list more specific
+entries first.
+
 ## Usage
 
 ### Claude Code
@@ -147,6 +173,19 @@ export KEYCLOAK_CLIENT_ID=keycloak-mcp
 export KEYCLOAK_CLIENT_SECRET=your-secret
 keycloak-mcp
 ```
+
+### CLI Options
+
+```bash
+keycloak-mcp --version   # Print version and exit
+keycloak-mcp --help      # Show usage and required environment variables
+keycloak-mcp --check     # Verify environment variables and authentication, then exit
+keycloak-mcp             # Start MCP server (STDIO, default)
+```
+
+With no options, the process runs as an MCP STDIO server (the mode used by MCP clients).
+
+`--check` exit codes: `0` success, `1` config error, `2` auth error.
 
 ## Development
 

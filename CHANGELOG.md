@@ -1,0 +1,64 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.3.0] - 2026-04-13
+
+### Added
+- `--version`, `--help`, `--check` CLI options. `--check` verifies environment
+  variables and authenticates to KeyCloak, exiting with `0` (success), `1`
+  (config error), or `2` (auth error).
+- `sites.ini.example` sample file and README section documenting
+  `KEYCLOAK_SITES_INI` format.
+- `.gitignore` entry for `sites.ini` to prevent accidental commits of
+  site-specific IP data.
+- `CHANGELOG.md`.
+
+### Changed
+- Console-script entry point moved from `keycloak_mcp.server:mcp.run` to
+  `keycloak_mcp.__main__:main` so CLI arguments are parsed.
+
+### Fixed
+- Suppress Python 3.14 `_enter_buffered_busy` crash on Ctrl-C by catching
+  `KeyboardInterrupt` and calling `os._exit(0)` to bypass interpreter
+  finalization of the stdio reader daemon thread.
+
+## [0.2.1] - 2026-04-12
+
+### Added
+- Display KeyCloak's `error` field for failure events in `get_events` output
+  (e.g. `invalid_user_credentials`, `user_temporarily_disabled`).
+
+### Changed
+- Apply `ruff format` across the codebase.
+
+### Fixed
+- Remove unused `result` assignment in `test_resolves_username_to_id`.
+
+## [0.2.0] - 2026-04-10
+
+### Added
+- `detect_login_loops` tool to detect users with rapid repeated logins
+  (redirect-loop detection).
+- `logout_user` tool to force-logout a user by removing all active sessions.
+- IP-to-site classification via `KEYCLOAK_SITES_INI`; IP addresses shown by
+  tools are annotated with site labels (unmatched IPs are labeled `external`).
+
+## [0.1.0] - Initial release
+
+### Added
+- MCP server for KeyCloak Admin REST API via Service Account (Client
+  Credentials Grant).
+- User, group, session, client, event, and security-monitoring tools.
+- Pytest + respx test suite.
+
+[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/shigechika/keycloak-mcp/releases/tag/v0.1.0

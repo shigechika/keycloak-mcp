@@ -1,0 +1,36 @@
+# Sample sites.ini for KEYCLOAK_SITES_INI
+#
+# Maps IPv4/IPv6 CIDR ranges to human-readable site names.
+# Used by tools that display IP addresses (get_user_sessions,
+# get_events, get_login_failures_by_ip, etc.) to annotate each
+# IP with the site it belongs to; unmatched IPs are labeled
+# "external".
+#
+# Usage:
+#   cp sites.ini.example sites.ini
+#   export KEYCLOAK_SITES_INI=/path/to/sites.ini
+#
+# Format:
+#   - Each [section] defines one site.
+#   - `name`  (optional): display name; defaults to the section name.
+#   - `ipv4`  (optional): comma-separated IPv4 CIDRs.
+#   - `ipv6`  (optional): comma-separated IPv6 CIDRs.
+#   - A single host is written as /32 (IPv4) or /128 (IPv6).
+
+[hq]
+name = HQ (Tokyo)
+ipv4 = 192.0.2.0/24, 198.51.100.0/24
+ipv6 = 2001:db8:1::/48
+
+[branch-osaka]
+name = Branch (Osaka)
+ipv4 = 203.0.113.0/24
+
+[vpn]
+name = VPN
+ipv4 = 10.0.0.0/8, 172.16.0.0/12
+ipv6 = fd00::/8
+
+[bastion]
+name = Bastion
+ipv4 = 192.0.2.42/32

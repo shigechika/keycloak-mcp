@@ -98,6 +98,32 @@ pip install -e .
 2. **Client authentication** と **Service account roles** を有効化
 3. Realm ロールを付与: `view-users`, `view-events`, `view-clients`, `manage-users`（パスワードリセット用）
 
+### IP→拠点名分類（任意）
+
+`KEYCLOAK_SITES_INI` に CIDR レンジと拠点名を対応付ける INI ファイルのパスを
+設定すると、IP アドレスを表示する各種ツール（`get_user_sessions`、`get_events`、
+`get_login_failures_by_ip` など）が IP に拠点ラベルを付与します。どの拠点にも
+一致しない IP は `external` と表示されます。環境変数が未設定、またはファイルが
+存在しない場合はラベルなしで表示されます。
+
+フォーマットは [`sites.ini.example`](sites.ini.example) を参照してください:
+
+```ini
+[hq]
+name = HQ (Tokyo)
+ipv4 = 192.0.2.0/24, 198.51.100.0/24
+ipv6 = 2001:db8:1::/48
+
+[vpn]
+name = VPN
+ipv4 = 10.0.0.0/8, 172.16.0.0/12
+```
+
+各 `[section]` が 1 拠点に対応します。`name` は表示ラベル（省略時はセクション
+名）。`ipv4` / `ipv6` はカンマ区切りの CIDR で、単一ホストは `/32` または
+`/128` で記述します。レンジは記述順にマッチするので、より具体的な範囲を先に
+書いてください。
+
 ## 使い方
 
 ### Claude Code
@@ -147,6 +173,19 @@ export KEYCLOAK_CLIENT_ID=keycloak-mcp
 export KEYCLOAK_CLIENT_SECRET=your-secret
 keycloak-mcp
 ```
+
+### CLI オプション
+
+```bash
+keycloak-mcp --version   # バージョン表示して終了
+keycloak-mcp --help      # 使い方と必須環境変数を表示
+keycloak-mcp --check     # 環境変数と認証を検証して終了
+keycloak-mcp             # MCP サーバー起動（STDIO、デフォルト）
+```
+
+オプションなしで起動すると MCP STDIO サーバとして動作します（MCP クライアントから呼ばれる通常モード）。
+
+`--check` の終了コード: `0` 成功、`1` 設定エラー、`2` 認証エラー。
 
 ## 開発
 

@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-keycloak-mcp = "keycloak_mcp.server:mcp.run"
+keycloak-mcp = "keycloak_mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/shigechika/keycloak-mcp"

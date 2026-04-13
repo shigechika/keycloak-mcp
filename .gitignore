@@ -12,3 +12,4 @@ htmlcov/
 .claude/
 .mcp.json
 uv.lock
+sites.ini
