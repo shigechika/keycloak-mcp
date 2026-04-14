@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- CI: `windows-latest × Python 3.12` smoke-test job in `ci.yml` and `release.yml`
+  to guard against Windows-specific regressions (cf.
+  modelcontextprotocol/python-sdk#2433). `fail-fast: false` keeps Linux
+  results visible if the Windows job trips. (#1, #2)
+
+### Fixed
+- Tests: skip `TestFormatTs::test_zero` on Windows — `datetime.fromtimestamp(0)`
+  raises `OSError` there, and `_format_ts` already falls back gracefully to
+  `str(epoch_ms)`. Production behavior unaffected.
+
 ## [0.3.0] - 2026-04-13
 
 ### Added
