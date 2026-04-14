@@ -1,6 +1,9 @@
 """Tests for MCP server tools."""
 
+import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from keycloak_mcp import server
 
@@ -29,6 +32,10 @@ class TestFormatTs:
     def test_invalid_value(self):
         assert server._format_ts("invalid") == "invalid"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows raises OSError on datetime.fromtimestamp(0); _format_ts falls back to str(0)",
+    )
     def test_zero(self):
         result = server._format_ts(0)
         assert "1970" in result or "1969" in result  # depends on TZ
