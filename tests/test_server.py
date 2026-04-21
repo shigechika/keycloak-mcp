@@ -458,3 +458,83 @@ class TestLabelIp:
         mock_sc.return_value.available = False
         result = server._label_ip("10.0.1.5")
         assert result == "10.0.1.5"
+
+
+SAMPLE_ADMIN_EVENT = {
+    "time": 1700000000000,
+    "operationType": "UPDATE",
+    "resourceType": "USER",
+    "resourcePath": "users/user-uuid-1",
+    "authDetails": {
+        "realmId": "nu-sso",
+        "clientId": "admin-client",
+        "userId": "admin-uuid",
+        "ipAddress": "10.0.0.1",
+    },
+    "representation": '{"attributes":{"temp_password":["xxx"]}}',
+}
+
+
+class TestGetAdminEvents:
+    @patch.object(server, "_kc")
+    def test_returns_events(self, mock):
+        mock.return_value.get_admin_events.return_value = [SAMPLE_ADMIN_EVENT]
+        result = server.get_admin_events(operation_types="UPDATE", resource_types="USER")
+        assert "Admin events (1)" in result
+        assert "UPDATE" in result
+        assert "path=users/user-uuid-1" in result
+        assert "admin=admin-uuid" in result
+        # Verify comma-separated parsing
+        call = mock.return_value.get_admin_events.call_args
+        assert call.kwargs["operation_types"] == ["UPDATE"]
+        assert call.kwargs["resource_types"] == ["USER"]
+
+    @patch.object(server, "_kc")
+    def test_multi_op_types(self, mock):
+        mock.return_value.get_admin_events.return_value = []
+        server.get_admin_events(operation_types="UPDATE, CREATE, DELETE")
+        call = mock.return_value.get_admin_events.call_args
+        assert call.kwargs["operation_types"] == ["UPDATE", "CREATE", "DELETE"]
+
+    @patch.object(server, "_kc")
+    def test_empty(self, mock):
+        mock.return_value.get_admin_events.return_value = []
+        result = server.get_admin_events()
+        assert "No admin events" in result
+
+    @patch.object(server, "_kc")
+    def test_representation_truncated(self, mock):
+        big = {**SAMPLE_ADMIN_EVENT, "representation": "x" * 300}
+        mock.return_value.get_admin_events.return_value = [big]
+        result = server.get_admin_events()
+        assert "..." in result
+        # Should not contain the full 300 chars
+        assert "x" * 300 not in result
+
+
+class TestGetUserAttributeHistory:
+    @patch.object(server, "_kc")
+    def test_user_not_found(self, mock):
+        mock.return_value.get_user_by_username.return_value = None
+        result = server.get_user_attribute_history("ghost@example.com")
+        assert "not found" in result
+
+    @patch.object(server, "_kc")
+    def test_no_history(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_admin_events.return_value = []
+        result = server.get_user_attribute_history("alice@example.com")
+        assert "No attribute change events" in result
+
+    @patch.object(server, "_kc")
+    def test_returns_history(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_admin_events.return_value = [SAMPLE_ADMIN_EVENT]
+        result = server.get_user_attribute_history("alice@example.com")
+        assert "Attribute history for alice@example.com (1)" in result
+        assert "temp_password" in result
+        # Verify the query was scoped to this user
+        call = mock.return_value.get_admin_events.call_args
+        assert call.kwargs["resource_path"] == "users/user-uuid-1"
+        assert call.kwargs["operation_types"] == ["UPDATE", "ACTION"]
+        assert call.kwargs["resource_types"] == ["USER"]

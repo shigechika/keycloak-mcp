@@ -571,6 +571,118 @@ def get_password_update_events(date_from: str = "", date_to: str = "", max_resul
     return "\n".join(lines)
 
 
+# ---- Admin event tools ----
+
+
+def _format_admin_event(e: dict, show_representation: bool = True) -> str:
+    """Format a single admin event record."""
+    auth = e.get("authDetails", {}) or {}
+    auth_user = auth.get("userId", "")
+    auth_ip = auth.get("ipAddress", "")
+    parts = [
+        _format_ts(e.get("time", 0)),
+        e.get("operationType", ""),
+        e.get("resourceType", ""),
+        f"path={e.get('resourcePath', '')}",
+        f"admin={auth_user}",
+        f"ip={_label_ip(auth_ip)}" if auth_ip else "ip=-",
+    ]
+    error = e.get("error")
+    if error:
+        parts.append(f"error={error}")
+    if show_representation:
+        rep = e.get("representation")
+        if rep:
+            # Truncate long representations for readability
+            rep_short = rep if len(rep) <= 200 else rep[:197] + "..."
+            parts.append(f"repr={rep_short}")
+    return "  " + "  ".join(parts)
+
+
+@mcp.tool()
+def get_admin_events(
+    operation_types: str = "",
+    resource_types: str = "",
+    resource_path: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    max_results: int = 50,
+) -> str:
+    """Get KeyCloak admin events (changes performed via the Admin REST API).
+
+    Admin events record operations performed by service accounts or admin users
+    — e.g. custom user attribute updates (``temp_password``), role / group
+    assignments, client configuration changes. These are distinct from user
+    events (login / password change). Use this when ``UPDATE_PROFILE`` in
+    ``get_events`` is empty but an attribute is known to have changed.
+
+    Args:
+        operation_types: Comma-separated list of CREATE, UPDATE, DELETE, ACTION.
+        resource_types: Comma-separated list of USER, CLIENT, ROLE, GROUP, REALM_ROLE, etc.
+        resource_path: Filter by resource path (e.g. "users/{userId}").
+        date_from: Start date (YYYY-MM-DD).
+        date_to: End date (YYYY-MM-DD).
+        max_results: Maximum results (default 50).
+    """
+    op_list = [s.strip() for s in operation_types.split(",") if s.strip()] or None
+    rt_list = [s.strip() for s in resource_types.split(",") if s.strip()] or None
+    events = _kc().get_admin_events(
+        operation_types=op_list,
+        resource_types=rt_list,
+        resource_path=resource_path or None,
+        date_from=date_from or None,
+        date_to=date_to or None,
+        max_results=max_results,
+    )
+    if not events:
+        return "No admin events found"
+    lines = [f"Admin events ({len(events)}):"]
+    for e in events:
+        lines.append(_format_admin_event(e))
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_user_attribute_history(
+    username: str,
+    date_from: str = "",
+    date_to: str = "",
+    max_results: int = 100,
+) -> str:
+    """Get admin-side attribute change history for a single user.
+
+    Queries admin events scoped to ``users/{userId}`` with UPDATE / ACTION
+    operations. Intended for tracking custom attribute changes such as
+    ``temp_password`` which are written by admin API and do **not** surface in
+    ``get_events`` (which only shows user-driven events like LOGIN /
+    UPDATE_PASSWORD).
+
+    Args:
+        username: Exact username (email).
+        date_from: Start date (YYYY-MM-DD).
+        date_to: End date (YYYY-MM-DD).
+        max_results: Maximum results (default 100).
+    """
+    user = _kc().get_user_by_username(username)
+    if not user:
+        return f"User '{username}' not found"
+    user_id = user["id"]
+    events = _kc().get_admin_events(
+        operation_types=["UPDATE", "ACTION"],
+        resource_types=["USER"],
+        resource_path=f"users/{user_id}",
+        date_from=date_from or None,
+        date_to=date_to or None,
+        max_results=max_results,
+    )
+    if not events:
+        return f"No attribute change events for {username}"
+    lines = [f"Attribute history for {username} ({len(events)}):"]
+    for e in events:
+        lines.append(_format_admin_event(e))
+    return "\n".join(lines)
+
+
 # ---- Session tools ----
 
 

@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Admin events support. Two new MCP tools expose the KeyCloak Admin Events
+  endpoint (`/admin/realms/{realm}/admin-events`), which is distinct from the
+  user events endpoint used by `get_events`:
+  - `get_admin_events`: general admin event query filterable by
+    `operation_types` (CREATE / UPDATE / DELETE / ACTION), `resource_types`
+    (USER / CLIENT / ROLE / GROUP / ...), `resource_path`, and date range.
+  - `get_user_attribute_history`: per-user helper that scopes the query to
+    `users/{userId}` with UPDATE / ACTION operations. Intended for tracking
+    admin-driven attribute changes (e.g. custom `temp_password` fields) that
+    do **not** surface in `get_events` because they are not `UPDATE_PROFILE`
+    or `UPDATE_PASSWORD` events.
+  Output shows `time / operationType / resourceType / resourcePath / admin
+  userId / admin ip / representation (truncated to 200 chars)`.
 - CI: `windows-latest × Python 3.12` smoke-test job in `ci.yml` and `release.yml`
   to guard against Windows-specific regressions (cf.
   modelcontextprotocol/python-sdk#2433). `fail-fast: false` keeps Linux

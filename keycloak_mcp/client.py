@@ -145,6 +145,81 @@ class KeyCloakClient:
             params["first"] += page_size
         return all_events
 
+    # --- Admin Events ---
+
+    def get_admin_events(
+        self,
+        operation_types: list[str] | None = None,
+        resource_types: list[str] | None = None,
+        resource_path: str | None = None,
+        auth_user: str | None = None,
+        auth_ip: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        max_results: int = 100,
+    ) -> list[dict]:
+        """Get admin events (attribute / user profile / role changes by admins).
+
+        Admin events are separate from user events. They record changes made via
+        the Admin REST API, such as user attribute updates (e.g. custom
+        ``temp_password``), role assignments, client config changes, etc.
+
+        :param operation_types: Filter by operation (CREATE, UPDATE, DELETE, ACTION).
+        :param resource_types: Filter by resource (USER, CLIENT, ROLE, GROUP, etc.).
+        :param resource_path: Filter by resource path (e.g. ``users/{userId}``).
+        :param auth_user: Filter by the admin user id who performed the operation.
+        :param auth_ip: Filter by the IP of the admin performing the operation.
+        :param date_from: Start date (YYYY-MM-DD).
+        :param date_to: End date (YYYY-MM-DD).
+        :param max_results: Maximum results per page.
+        """
+        params: dict[str, Any] = {"max": max_results}
+        if operation_types:
+            params["operationTypes"] = operation_types
+        if resource_types:
+            params["resourceTypes"] = resource_types
+        if resource_path:
+            params["resourcePath"] = resource_path
+        if auth_user:
+            params["authUser"] = auth_user
+        if auth_ip:
+            params["authIpAddress"] = auth_ip
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+        return self._get("/admin-events", params)
+
+    def get_admin_events_all(
+        self,
+        operation_types: list[str] | None = None,
+        resource_types: list[str] | None = None,
+        resource_path: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Get all admin events with automatic pagination."""
+        params: dict[str, Any] = {"max": page_size, "first": 0}
+        if operation_types:
+            params["operationTypes"] = operation_types
+        if resource_types:
+            params["resourceTypes"] = resource_types
+        if resource_path:
+            params["resourcePath"] = resource_path
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+        all_events: list[dict] = []
+        while True:
+            page = self._get("/admin-events", params)
+            all_events.extend(page)
+            if len(page) < page_size:
+                break
+            params["first"] += page_size
+        return all_events
+
     # --- Sessions ---
 
     def get_session_stats(self) -> list[dict]:

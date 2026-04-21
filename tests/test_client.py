@@ -106,6 +106,52 @@ class TestGetEventsAll:
         assert len(result) == 4
 
 
+class TestGetAdminEvents:
+    def test_with_filters(self, mock_api):
+        events = [
+            {
+                "time": 1700000000000,
+                "operationType": "UPDATE",
+                "resourceType": "USER",
+                "resourcePath": "users/user-uuid-1",
+                "authDetails": {"userId": "admin-uuid", "ipAddress": "10.0.0.1"},
+                "representation": '{"attributes":{"temp_password":["xxx"]}}',
+            }
+        ]
+        route = mock_api.get(f"{ADMIN_BASE}/admin-events").mock(return_value=httpx.Response(200, json=events))
+        result = KeyCloakClient().get_admin_events(
+            operation_types=["UPDATE"],
+            resource_types=["USER"],
+            resource_path="users/user-uuid-1",
+            date_from="2024-01-01",
+        )
+        assert len(result) == 1
+        assert result[0]["operationType"] == "UPDATE"
+        url = str(route.calls[0].request.url)
+        assert "operationTypes=UPDATE" in url
+        assert "resourceTypes=USER" in url
+        assert "users%2Fuser-uuid-1" in url or "users/user-uuid-1" in url
+
+    def test_empty(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/admin-events").mock(return_value=httpx.Response(200, json=[]))
+        result = KeyCloakClient().get_admin_events()
+        assert result == []
+
+
+class TestGetAdminEventsAll:
+    def test_pagination(self, mock_api):
+        page1 = [{"time": i, "operationType": "UPDATE"} for i in range(3)]
+        page2 = [{"time": 99, "operationType": "UPDATE"}]
+        mock_api.get(f"{ADMIN_BASE}/admin-events").mock(
+            side_effect=[
+                httpx.Response(200, json=page1),
+                httpx.Response(200, json=page2),
+            ]
+        )
+        result = KeyCloakClient().get_admin_events_all(operation_types=["UPDATE"], page_size=3)
+        assert len(result) == 4
+
+
 class TestGetClientByClientId:
     def test_found(self, mock_api):
         client = {"id": "internal-uuid", "clientId": "xflow", "protocol": "saml"}
