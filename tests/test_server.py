@@ -504,12 +504,27 @@ class TestGetAdminEvents:
 
     @patch.object(server, "_kc")
     def test_representation_truncated(self, mock):
-        big = {**SAMPLE_ADMIN_EVENT, "representation": "x" * 300}
+        big = {**SAMPLE_ADMIN_EVENT, "representation": "x" * 1000}
         mock.return_value.get_admin_events.return_value = [big]
+        # Default max_repr is 500, so 1000 x's should be truncated
         result = server.get_admin_events()
         assert "..." in result
-        # Should not contain the full 300 chars
-        assert "x" * 300 not in result
+        assert "x" * 1000 not in result
+
+    @patch.object(server, "_kc")
+    def test_representation_full_when_negative(self, mock):
+        big = {**SAMPLE_ADMIN_EVENT, "representation": "x" * 1000}
+        mock.return_value.get_admin_events.return_value = [big]
+        result = server.get_admin_events(max_repr=-1)
+        assert "x" * 1000 in result
+        assert "..." not in result
+
+    @patch.object(server, "_kc")
+    def test_representation_omitted_when_zero(self, mock):
+        big = {**SAMPLE_ADMIN_EVENT, "representation": "x" * 100}
+        mock.return_value.get_admin_events.return_value = [big]
+        result = server.get_admin_events(max_repr=0)
+        assert "repr=" not in result
 
 
 class TestGetUserAttributeHistory:

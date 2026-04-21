@@ -574,8 +574,14 @@ def get_password_update_events(date_from: str = "", date_to: str = "", max_resul
 # ---- Admin event tools ----
 
 
-def _format_admin_event(e: dict, show_representation: bool = True) -> str:
-    """Format a single admin event record."""
+def _format_admin_event(e: dict, max_repr: int = 500) -> str:
+    """Format a single admin event record.
+
+    :param e: the raw admin event.
+    :param max_repr: max chars of the ``representation`` field to include.
+        Use ``0`` to omit the representation entirely, or a negative value
+        to include it in full without truncation.
+    """
     auth = e.get("authDetails", {}) or {}
     auth_user = auth.get("userId", "")
     auth_ip = auth.get("ipAddress", "")
@@ -590,11 +596,13 @@ def _format_admin_event(e: dict, show_representation: bool = True) -> str:
     error = e.get("error")
     if error:
         parts.append(f"error={error}")
-    if show_representation:
+    if max_repr != 0:
         rep = e.get("representation")
         if rep:
-            # Truncate long representations for readability
-            rep_short = rep if len(rep) <= 200 else rep[:197] + "..."
+            if max_repr < 0 or len(rep) <= max_repr:
+                rep_short = rep
+            else:
+                rep_short = rep[: max_repr - 3] + "..."
             parts.append(f"repr={rep_short}")
     return "  " + "  ".join(parts)
 
@@ -607,6 +615,7 @@ def get_admin_events(
     date_from: str = "",
     date_to: str = "",
     max_results: int = 50,
+    max_repr: int = 500,
 ) -> str:
     """Get KeyCloak admin events (changes performed via the Admin REST API).
 
@@ -623,6 +632,7 @@ def get_admin_events(
         date_from: Start date (YYYY-MM-DD).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 50).
+        max_repr: Max chars of the representation field. 0 = omit, -1 = full.
     """
     op_list = [s.strip() for s in operation_types.split(",") if s.strip()] or None
     rt_list = [s.strip() for s in resource_types.split(",") if s.strip()] or None
@@ -638,7 +648,7 @@ def get_admin_events(
         return "No admin events found"
     lines = [f"Admin events ({len(events)}):"]
     for e in events:
-        lines.append(_format_admin_event(e))
+        lines.append(_format_admin_event(e, max_repr=max_repr))
     return "\n".join(lines)
 
 
@@ -648,6 +658,7 @@ def get_user_attribute_history(
     date_from: str = "",
     date_to: str = "",
     max_results: int = 100,
+    max_repr: int = 500,
 ) -> str:
     """Get admin-side attribute change history for a single user.
 
@@ -662,6 +673,7 @@ def get_user_attribute_history(
         date_from: Start date (YYYY-MM-DD).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 100).
+        max_repr: Max chars of the representation field. 0 = omit, -1 = full.
     """
     user = _kc().get_user_by_username(username)
     if not user:
@@ -679,7 +691,7 @@ def get_user_attribute_history(
         return f"No attribute change events for {username}"
     lines = [f"Attribute history for {username} ({len(events)}):"]
     for e in events:
-        lines.append(_format_admin_event(e))
+        lines.append(_format_admin_event(e, max_repr=max_repr))
     return "\n".join(lines)
 
 
