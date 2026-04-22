@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-22
+
 ### Changed
 - Internal refactor (no behavior change):
   - Extract `_resolve_user(username)` in `server.py` to replace the
@@ -121,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User, group, session, client, event, and security-monitoring tools.
 - Pytest + respx test suite.
 
-[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.0...v0.2.1
