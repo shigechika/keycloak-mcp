@@ -38,8 +38,13 @@ class KeyCloakClient:
     def _paginate(self, path: str, params: dict, page_size: int) -> list[dict]:
         """Page through a GET list endpoint until a short page arrives.
 
-        `params` is copied; this method sets ``max`` and ``first`` on the copy
-        and leaves the caller's dict untouched.
+        Assumes the endpoint returns a bare JSON array of items, which is the
+        KeyCloak Admin API convention for list endpoints (``/events``,
+        ``/admin-events``, ``/users``, …). Envelope-style responses like
+        ``{"items": [...], "total": N}`` would need a separate helper.
+
+        ``params`` is copied; this method sets ``max`` and ``first`` on the
+        copy and leaves the caller's dict untouched.
         """
         params = dict(params)
         params["max"] = page_size
