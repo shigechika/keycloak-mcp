@@ -4,58 +4,68 @@
 
 English | [日本語](README.ja.md)
 
-MCP (Model Context Protocol) server for [KeyCloak](https://www.keycloak.org/) Admin REST API.
+An MCP (Model Context Protocol) server for the [KeyCloak](https://www.keycloak.org/) Admin REST API.
 
-Uses **Client Credentials Grant** (Service Account) — no user password or TOTP required.
-Infinispan-safe: does not create user sessions or use the userinfo endpoint.
+Authenticates via a Service Account (**Client Credentials Grant**), so no human password or TOTP is involved. Also Infinispan-safe — it never creates user sessions and never hits the userinfo endpoint.
 
 ## Features
 
-### User Management
+### Users
 
 | Tool | Description |
 |------|-------------|
-| `count_users` | Get total user count in the realm |
-| `search_users` | Search users by username, email, or name |
-| `get_user` | Get detailed user information by username |
-| `reset_password` | Reset a user's password |
-| `reset_passwords_batch` | Reset passwords for multiple users from CSV |
-| `get_user_sessions` | Get active sessions for a user (local time) |
-| `logout_user` | Force logout a user by removing all sessions |
+| `count_users` | Total user count in the realm |
+| `search_users` | Partial-match search (username / email / name) |
+| `get_user` | Full detail for an exact username |
+| `reset_password` | Reset one user's password |
+| `reset_passwords_batch` | Bulk reset from CSV (`username,password` per line; blank password is generated) |
+| `get_user_sessions` | Active sessions for one user, timestamps in local time |
+| `logout_user` | Kill all active sessions for one user |
 
-### Group Management
-
-| Tool | Description |
-|------|-------------|
-| `list_user_groups` | List groups a user belongs to |
-| `list_users_by_group` | List all members of a group |
-
-### Security Monitoring
+### Groups
 
 | Tool | Description |
 |------|-------------|
-| `get_brute_force_status` | Check if a user is locked by brute force detection |
-| `get_login_failures_by_ip` | Login failure statistics by source IP (with site labels) |
-| `detect_login_loops` | Detect users with rapid repeated logins (redirect loop detection) |
+| `list_user_groups` | Which groups a user belongs to |
+| `list_users_by_group` | Members of a group |
 
-### Event Analytics
+### Security
 
 | Tool | Description |
 |------|-------------|
-| `get_events` | Get events with filters (type, username, client, IP, date). Resolves username to user ID automatically. Shows KeyCloak's ``error`` field for failure events (e.g. ``invalid_user_credentials``, ``user_temporarily_disabled``) |
-| `get_login_stats` | Login success/failure statistics with full pagination |
-| `get_login_stats_by_hour` | Login statistics by hour (local time) |
-| `get_login_stats_by_client` | Login statistics by client (SP) |
-| `get_password_update_events` | Password update event history |
+| `get_brute_force_status` | Whether a user is currently locked by brute-force detection |
+| `get_login_failures_by_ip` | Failure breakdown by source IP (site-labeled when `KEYCLOAK_SITES_INI` is set) |
+| `detect_login_loops` | Flag users who logged in too many times in a short window (redirect loops) |
 
-### Session & Client
+### Events
+
+| Tool | Description |
+|------|-------------|
+| `get_events` | Filter by type, username, client, IP, and date range. Username is resolved to user ID internally. Failure events include KeyCloak's `error` field (e.g. `invalid_user_credentials`). |
+| `get_login_stats` | Login success/failure totals, paginated across all results |
+| `get_login_stats_by_hour` | Logins bucketed by hour of day (local time) |
+| `get_login_stats_by_client` | Logins bucketed by client / SP |
+| `get_password_update_events` | `UPDATE_PASSWORD` history |
+
+### Admin Events
+
+`get_events` only sees *user* events. Actions driven by an admin — or by a service account writing custom attributes — don't show up there. The admin-event endpoint fills that gap.
+
+| Tool | Description |
+|------|-------------|
+| `get_admin_events` | Filter by operation (CREATE / UPDATE / DELETE / ACTION), resource type (USER / CLIENT / ROLE / GROUP / …), resource path, and date range |
+| `get_user_attribute_history` | UPDATE/ACTION events scoped to one user — handy for tracking when a custom attribute (e.g. `temp_password`) was written by an automated pipeline |
+
+Both tools accept `max_repr` to control the representation payload: positive = truncate to N chars (default 500), `0` = omit, negative = include in full.
+
+### Sessions & Clients
 
 | Tool | Description |
 |------|-------------|
 | `get_session_stats` | Active session count per client |
-| `get_client_sessions` | Active sessions for a specific client |
-| `list_clients` | List all SAML/OIDC clients |
-| `get_realm_roles` | List all realm-level roles |
+| `get_client_sessions` | Active sessions for one client (SP) |
+| `list_clients` | SAML and OIDC clients in the realm |
+| `get_realm_roles` | Realm-level roles |
 
 ## Setup
 
@@ -67,7 +77,7 @@ uv pip install keycloak-mcp
 pip install keycloak-mcp
 ```
 
-Or from source:
+From source:
 
 ```bash
 git clone https://github.com/shigechika/keycloak-mcp.git
@@ -82,31 +92,25 @@ pip install -e .
 
 ## Configuration
 
-Set the following environment variables:
-
 | Variable | Description | Default |
 |---|---|---|
-| `KEYCLOAK_URL` | KeyCloak base URL (e.g., `https://sso.example.com`) | *required* |
+| `KEYCLOAK_URL` | Base URL, e.g. `https://sso.example.com` | *required* |
 | `KEYCLOAK_REALM` | Realm name | `master` |
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
-| `KEYCLOAK_SITES_INI` | Path to INI file for IP-to-site classification (optional) | — |
+| `KEYCLOAK_SITES_INI` | INI file for IP-to-site labeling (see below) | *unset* |
 
-### KeyCloak Client Setup
+### KeyCloak client setup
 
-1. Create a new client in KeyCloak Admin Console
-2. Enable **Client authentication** and **Service account roles**
-3. Assign realm roles: `view-users`, `view-events`, `view-clients`, `manage-users` (for password reset)
+1. Create a new client in the KeyCloak admin console.
+2. Turn on **Client authentication** and **Service account roles**.
+3. Give it `view-users`, `view-events`, `view-clients`, and — only if you need password reset — `manage-users`.
 
-### IP-to-Site Classification (optional)
+### IP-to-site labeling (optional)
 
-Set `KEYCLOAK_SITES_INI` to the path of an INI file that maps CIDR ranges to
-site names. When configured, tools that display IP addresses
-(`get_user_sessions`, `get_events`, `get_login_failures_by_ip`, etc.) annotate
-each IP with its site; unmatched IPs are labeled `external`. If the variable is
-unset or the file is missing, IPs are shown without labels.
+Point `KEYCLOAK_SITES_INI` at an INI file if you want IP addresses in tool output to be tagged with your site names. Tools like `get_user_sessions`, `get_events`, and `get_login_failures_by_ip` pick it up automatically; anything outside your declared ranges is labeled `external`. Leave the variable unset and IPs are shown as-is.
 
-See [`sites.ini.example`](sites.ini.example) for the format:
+See [`sites.ini.example`](sites.ini.example). A minimal file:
 
 ```ini
 [hq]
@@ -119,16 +123,13 @@ name = VPN
 ipv4 = 10.0.0.0/8, 172.16.0.0/12
 ```
 
-Each `[section]` defines one site. `name` is the display label (defaults to the
-section name). `ipv4` and `ipv6` take comma-separated CIDRs; a single host is
-`/32` or `/128`. Ranges are matched in file order, so list more specific
-entries first.
+One site per `[section]`. `name` is the display label (falls back to the section name). `ipv4` / `ipv6` take comma-separated CIDRs; a single host is `/32` or `/128`. Matching is first-match in file order — put specific ranges before broad ones.
 
 ## Usage
 
 ### Claude Code
 
-Add to `.mcp.json`:
+In `.mcp.json`:
 
 ```json
 {
@@ -148,7 +149,7 @@ Add to `.mcp.json`:
 
 ### Claude Desktop
 
-Add to `claude_desktop_config.json`:
+In `claude_desktop_config.json`:
 
 ```json
 {
@@ -165,7 +166,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Direct Execution
+### From a shell
 
 ```bash
 export KEYCLOAK_URL=https://sso.example.com
@@ -174,18 +175,18 @@ export KEYCLOAK_CLIENT_SECRET=your-secret
 keycloak-mcp
 ```
 
-### CLI Options
+### CLI
 
 ```bash
 keycloak-mcp --version   # Print version and exit
 keycloak-mcp --help      # Show usage and required environment variables
-keycloak-mcp --check     # Verify environment variables and authentication, then exit
-keycloak-mcp             # Start MCP server (STDIO, default)
+keycloak-mcp --check     # Verify env vars and authentication, then exit
+keycloak-mcp             # Run the MCP STDIO server (default)
 ```
 
-With no options, the process runs as an MCP STDIO server (the mode used by MCP clients).
+No-argument mode is the normal one — that's how MCP clients launch it.
 
-`--check` exit codes: `0` success, `1` config error, `2` auth error.
+`--check` exit codes: `0` success, `1` configuration error, `2` authentication error.
 
 ## Development
 
