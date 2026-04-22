@@ -6,6 +6,7 @@ Infinispan-safe: does not create user sessions or use userinfo endpoint.
 
 import secrets
 import string
+import sys
 from collections import Counter
 from datetime import datetime
 
@@ -127,7 +128,9 @@ def reset_passwords_batch(csv_text: str, temporary: bool = False) -> str:
     """Reset passwords for multiple users from CSV text.
 
     Each line should be: username,password
-    If password column is empty, a random 12-char password is generated.
+    If password column is empty, a random 12-char password is generated and
+    included in the response (the caller cannot recover it otherwise).
+    Caller-supplied passwords are never echoed back.
 
     Args:
         csv_text: CSV text with username,password per line (header optional).
@@ -140,16 +143,27 @@ def reset_passwords_batch(csv_text: str, temporary: bool = False) -> str:
             continue
         parts = line.split(",")
         username = parts[0].strip()
-        password = parts[1].strip() if len(parts) > 1 and parts[1].strip() else _random_password()
+        supplied = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+        password = supplied or _random_password()
+        generated = not supplied
         u = _kc().get_user_by_username(username)
         if not u:
             results.append(f"  NG  {username} — not found")
             continue
         try:
             _kc().reset_password(u["id"], password, temporary)
-            results.append(f"  OK  {username} — {password}")
         except Exception as e:
-            results.append(f"  NG  {username} — {e}")
+            # Log details to stderr for operator diagnostics; keep the
+            # tool response free of internal URLs or httpx repr payloads.
+            print(f"reset_passwords_batch: {username}: {type(e).__name__}: {e}", file=sys.stderr)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            label = f"{type(e).__name__} {status}" if status else type(e).__name__
+            results.append(f"  NG  {username} — request failed ({label})")
+            continue
+        if generated:
+            results.append(f"  OK  {username} — reset (generated: {password})")
+        else:
+            results.append(f"  OK  {username} — reset (supplied)")
     return f"Batch reset ({len(results)} users):\n" + "\n".join(results)
 
 

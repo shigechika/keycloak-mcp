@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `reset_passwords_batch` no longer echoes caller-supplied passwords in its
+  response. Each successful row is now explicitly labeled
+  `reset (supplied)` or `reset (generated: <pw>)` so the caller can tell at
+  a glance whether a row carries a secret.
+- Exception details from `reset_passwords_batch` are no longer spliced into
+  the tool response (which an LLM sees). The response carries only the
+  exception class name, while the full details go to stderr for operators.
+
 ## [0.4.0] - 2026-04-22
 
 ### Added

@@ -110,6 +110,61 @@ class TestResetPasswordsBatch:
         result = server.reset_passwords_batch(csv)
         assert "1 users" in result
 
+    @patch.object(server, "_kc")
+    def test_supplied_password_not_echoed(self, mock):
+        """Caller-provided passwords must not appear in the response."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        secret = "s3cret-do-not-leak"
+        result = server.reset_passwords_batch(f"alice@example.com,{secret}")
+        assert secret not in result
+        assert "OK" in result
+
+    @patch.object(server, "_kc")
+    def test_generated_password_is_returned(self, mock):
+        """Auto-generated passwords are returned verbatim so the caller can distribute them."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        result = server.reset_passwords_batch("alice@example.com,")
+        # The actual generated password passed to reset_password must appear in
+        # the response — otherwise the caller has no way to recover it.
+        generated = mock.return_value.reset_password.call_args.args[1]
+        assert f"reset (generated: {generated})" in result
+
+    @patch.object(server, "_kc")
+    def test_supplied_is_labeled(self, mock):
+        """Supplied-password rows are explicitly labeled so callers can't confuse them with generated ones."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        result = server.reset_passwords_batch("alice@example.com,mypass")
+        assert "reset (supplied)" in result
+        assert "generated" not in result
+
+    @patch.object(server, "_kc")
+    def test_exception_message_is_sanitized(self, mock, capsys):
+        """httpx-style exception details must not reach the response."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        leak = "https://internal-sso.example.corp/admin/realms/foo"
+        mock.return_value.reset_password.side_effect = RuntimeError(f"Connection failed: {leak}")
+        result = server.reset_passwords_batch("alice@example.com,pw")
+        assert leak not in result
+        assert "RuntimeError" in result
+        # Detailed error is logged to stderr for operators.
+        assert leak in capsys.readouterr().err
+
+    @patch.object(server, "_kc")
+    def test_http_status_code_is_surfaced(self, mock):
+        """If the underlying error carries an HTTP status, include it so callers can tell
+        auth failures apart from network ones — but still no body or URL."""
+
+        class FakeHTTPError(Exception):
+            def __init__(self, status):
+                super().__init__("boom")
+                self.response = type("R", (), {"status_code": status})()
+
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.reset_password.side_effect = FakeHTTPError(403)
+        result = server.reset_passwords_batch("alice@example.com,pw")
+        assert "FakeHTTPError 403" in result
+        assert "boom" not in result
+
 
 class TestGetBruteForceStatus:
     @patch.object(server, "_kc")
