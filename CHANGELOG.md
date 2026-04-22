@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `reset_passwords_batch` no longer echoes caller-supplied passwords in its
+  response. Auto-generated passwords are still returned (the caller cannot
+  recover them otherwise) and are now marked with a `generated:` prefix.
+- Exception details from `reset_passwords_batch` are no longer spliced into
+  the tool response (which an LLM sees). The response carries only the
+  exception class name, while the full details go to stderr for operators.
+
 ## [0.4.0] - 2026-04-22
 
 ### Added

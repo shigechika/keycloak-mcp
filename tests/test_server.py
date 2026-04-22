@@ -110,6 +110,36 @@ class TestResetPasswordsBatch:
         result = server.reset_passwords_batch(csv)
         assert "1 users" in result
 
+    @patch.object(server, "_kc")
+    def test_supplied_password_not_echoed(self, mock):
+        """Caller-provided passwords must not appear in the response."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        secret = "s3cret-do-not-leak"
+        result = server.reset_passwords_batch(f"alice@example.com,{secret}")
+        assert secret not in result
+        assert "OK" in result
+
+    @patch.object(server, "_kc")
+    def test_generated_password_is_returned(self, mock):
+        """Auto-generated passwords are returned so the caller can distribute them."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        result = server.reset_passwords_batch("alice@example.com,")
+        assert "generated:" in result
+        # generated password is 12 alnum chars by default
+        assert "alice@example.com" in result
+
+    @patch.object(server, "_kc")
+    def test_exception_message_is_sanitized(self, mock, capsys):
+        """httpx-style exception details must not reach the response."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        leak = "https://internal-sso.example.corp/admin/realms/foo"
+        mock.return_value.reset_password.side_effect = RuntimeError(f"Connection failed: {leak}")
+        result = server.reset_passwords_batch("alice@example.com,pw")
+        assert leak not in result
+        assert "RuntimeError" in result
+        # Detailed error is logged to stderr for operators.
+        assert leak in capsys.readouterr().err
+
 
 class TestGetBruteForceStatus:
     @patch.object(server, "_kc")
