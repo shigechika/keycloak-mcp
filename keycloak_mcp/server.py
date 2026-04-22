@@ -8,6 +8,7 @@ import secrets
 import string
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
@@ -55,7 +56,7 @@ def _label_ip(ip: str) -> str:
     return f"{ip} ({site})" if site else f"{ip} (external)"
 
 
-def _format_event_list(header: str, events: list[dict], formatter) -> str:
+def _format_event_list(header: str, events: list[dict], formatter: Callable[[dict], str]) -> str:
     """Render a header followed by one formatted line per event."""
     return "\n".join([header, *(formatter(e) for e in events)])
 
