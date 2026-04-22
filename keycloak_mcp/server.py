@@ -159,9 +159,9 @@ def reset_passwords_batch(csv_text: str, temporary: bool = False) -> str:
             results.append(f"  NG  {username} — request failed ({type(e).__name__})")
             continue
         if generated:
-            results.append(f"  OK  {username} — generated: {password}")
+            results.append(f"  OK  {username} — reset (generated: {password})")
         else:
-            results.append(f"  OK  {username}")
+            results.append(f"  OK  {username} — reset (supplied)")
     return f"Batch reset ({len(results)} users):\n" + "\n".join(results)
 
 

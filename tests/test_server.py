@@ -124,9 +124,16 @@ class TestResetPasswordsBatch:
         """Auto-generated passwords are returned so the caller can distribute them."""
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
         result = server.reset_passwords_batch("alice@example.com,")
-        assert "generated:" in result
-        # generated password is 12 alnum chars by default
+        assert "reset (generated:" in result
         assert "alice@example.com" in result
+
+    @patch.object(server, "_kc")
+    def test_supplied_is_labeled(self, mock):
+        """Supplied-password rows are explicitly labeled so callers can't confuse them with generated ones."""
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        result = server.reset_passwords_batch("alice@example.com,mypass")
+        assert "reset (supplied)" in result
+        assert "generated" not in result
 
     @patch.object(server, "_kc")
     def test_exception_message_is_sanitized(self, mock, capsys):
