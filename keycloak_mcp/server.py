@@ -55,6 +55,20 @@ def _label_ip(ip: str) -> str:
     return f"{ip} ({site})" if site else f"{ip} (external)"
 
 
+def _resolve_user(username: str) -> tuple[dict | None, str]:
+    """Look up a user by exact username. Returns (user, error_message).
+
+    ``error_message`` is the ready-to-return string when the user is missing,
+    and is empty otherwise. Every MCP tool that takes a username starts with
+    the same check, so this keeps the wording (and the lookup call) in one
+    place.
+    """
+    user = _kc().get_user_by_username(username)
+    if not user:
+        return None, f"User '{username}' not found"
+    return user, ""
+
+
 # ---- User tools ----
 
 
@@ -93,9 +107,9 @@ def get_user(username: str) -> str:
     Args:
         username: Exact username (e.g., user@example.com).
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     lines = [
         f"# {u['username']}",
         f"ID: {u['id']}",
@@ -116,9 +130,9 @@ def reset_password(username: str, password: str, temporary: bool = False) -> str
         password: New password to set.
         temporary: If True, user must change password on next login.
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     _kc().reset_password(u["id"], password, temporary)
     return f"Password reset for {username} (temporary={temporary})"
 
@@ -180,9 +194,9 @@ def get_user_sessions(username: str) -> str:
     Args:
         username: Exact username (email).
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     sessions = _kc().get_user_sessions(u["id"])
     if not sessions:
         return f"No active sessions for {username}"
@@ -205,9 +219,9 @@ def logout_user(username: str) -> str:
     Args:
         username: Exact username (email).
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     sessions = _kc().get_user_sessions(u["id"])
     if not sessions:
         return f"No active sessions for {username} — nothing to do"
@@ -225,9 +239,9 @@ def get_brute_force_status(username: str) -> str:
     Args:
         username: Exact username (email).
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     status = _kc().get_brute_force_status(u["id"])
     if not status or not status.get("numFailures"):
         return f"User '{username}': no brute force events detected"
@@ -251,9 +265,9 @@ def list_user_groups(username: str) -> str:
     Args:
         username: Exact username (email).
     """
-    u = _kc().get_user_by_username(username)
-    if not u:
-        return f"User '{username}' not found"
+    u, err = _resolve_user(username)
+    if err:
+        return err
     groups = _kc().get_user_groups(u["id"])
     if not groups:
         return f"User '{username}' belongs to no groups"
@@ -314,9 +328,9 @@ def get_events(
     # Resolve username to user ID for the KeyCloak API
     user_id = None
     if username:
-        u = _kc().get_user_by_username(username)
-        if not u:
-            return f"User '{username}' not found"
+        u, err = _resolve_user(username)
+        if err:
+            return err
         user_id = u["id"]
 
     events = _kc().get_events(
@@ -689,9 +703,9 @@ def get_user_attribute_history(
         max_results: Maximum results (default 100).
         max_repr: Max chars of the representation field. 0 = omit, -1 = full.
     """
-    user = _kc().get_user_by_username(username)
-    if not user:
-        return f"User '{username}' not found"
+    user, err = _resolve_user(username)
+    if err:
+        return err
     user_id = user["id"]
     events = _kc().get_admin_events(
         operation_types=["UPDATE", "ACTION"],

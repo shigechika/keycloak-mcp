@@ -35,6 +35,28 @@ class KeyCloakClient:
         resp.raise_for_status()
         return resp.status_code
 
+    def _paginate(self, path: str, params: dict, page_size: int) -> list[dict]:
+        """Page through a GET list endpoint until a short page arrives.
+
+        Assumes the endpoint returns a bare JSON array of items, which is the
+        KeyCloak Admin API convention for list endpoints (``/events``,
+        ``/admin-events``, ``/users``, …). Envelope-style responses like
+        ``{"items": [...], "total": N}`` would need a separate helper.
+
+        ``params`` is copied; this method sets ``max`` and ``first`` on the
+        copy and leaves the caller's dict untouched.
+        """
+        params = dict(params)
+        params["max"] = page_size
+        params["first"] = 0
+        all_items: list[dict] = []
+        while True:
+            page = self._get(path, params)
+            all_items.extend(page)
+            if len(page) < page_size:
+                return all_items
+            params["first"] += page_size
+
     # --- Users ---
 
     def count_users(self) -> int:
@@ -119,7 +141,7 @@ class KeyCloakClient:
         page_size: int = 1000,
     ) -> list[dict]:
         """Get all events with automatic pagination."""
-        params: dict[str, Any] = {"max": page_size, "first": 0}
+        params: dict[str, Any] = {}
         if event_type:
             params["type"] = event_type
         if user:
@@ -128,14 +150,7 @@ class KeyCloakClient:
             params["dateFrom"] = date_from
         if date_to:
             params["dateTo"] = date_to
-        all_events: list[dict] = []
-        while True:
-            page = self._get("/events", params)
-            all_events.extend(page)
-            if len(page) < page_size:
-                break
-            params["first"] += page_size
-        return all_events
+        return self._paginate("/events", params, page_size)
 
     # --- Admin Events ---
 
@@ -192,7 +207,7 @@ class KeyCloakClient:
         page_size: int = 1000,
     ) -> list[dict]:
         """Get all admin events with automatic pagination."""
-        params: dict[str, Any] = {"max": page_size, "first": 0}
+        params: dict[str, Any] = {}
         if operation_types:
             params["operationTypes"] = operation_types
         if resource_types:
@@ -203,14 +218,7 @@ class KeyCloakClient:
             params["dateFrom"] = date_from
         if date_to:
             params["dateTo"] = date_to
-        all_events: list[dict] = []
-        while True:
-            page = self._get("/admin-events", params)
-            all_events.extend(page)
-            if len(page) < page_size:
-                break
-            params["first"] += page_size
-        return all_events
+        return self._paginate("/admin-events", params, page_size)
 
     # --- Sessions ---
 
