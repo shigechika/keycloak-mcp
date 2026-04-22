@@ -1,17 +1,11 @@
 """Tests for MCP server tools."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from keycloak_mcp import server
-
-
-def _mock_kc():
-    """Create a mock KeyCloakClient."""
-    return MagicMock()
-
 
 SAMPLE_USER = {
     "id": "user-uuid-1",

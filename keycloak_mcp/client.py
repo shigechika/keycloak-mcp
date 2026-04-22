@@ -45,10 +45,6 @@ class KeyCloakClient:
         """Search users by username, email, or name."""
         return self._get("/users", {"search": query, "max": max_results})
 
-    def get_user(self, user_id: str) -> dict:
-        """Get user by ID."""
-        return self._get(f"/users/{user_id}")
-
     def get_user_by_username(self, username: str) -> dict | None:
         """Get user by exact username. Returns None if not found."""
         users = self._get("/users", {"username": username, "exact": "true"})
@@ -68,10 +64,6 @@ class KeyCloakClient:
     def logout_user(self, user_id: str) -> int:
         """Remove all sessions for a user (force logout)."""
         return self._delete(f"/users/{user_id}/sessions")
-
-    def get_user_roles(self, user_id: str) -> dict:
-        """Get role mappings for a user."""
-        return self._get(f"/users/{user_id}/role-mappings")
 
     def get_user_groups(self, user_id: str) -> list[dict]:
         """Get groups a user belongs to."""
