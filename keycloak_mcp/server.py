@@ -8,6 +8,7 @@ import secrets
 import string
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
@@ -53,6 +54,33 @@ def _label_ip(ip: str) -> str:
         return ip
     site = sc.classify(ip)
     return f"{ip} ({site})" if site else f"{ip} (external)"
+
+
+def _format_event_list(header: str, events: list[dict], formatter: Callable[[dict], str]) -> str:
+    """Render a header followed by one formatted line per event."""
+    return "\n".join([header, *(formatter(e) for e in events)])
+
+
+def _format_user_event(e: dict) -> str:
+    """Format a single user-side event from `/events`."""
+    details = e.get("details", {})
+    error = e.get("error", "")
+    error_part = f"  error={error}" if error else ""
+    return (
+        f"  {_format_ts(e.get('time', 0))}  {e['type']}  "
+        f"user={details.get('username', e.get('userId', ''))}  "
+        f"ip={_label_ip(e.get('ipAddress', ''))}  "
+        f"client={e.get('clientId', '')}{error_part}"
+    )
+
+
+def _format_password_event(e: dict) -> str:
+    """Format a single UPDATE_PASSWORD event."""
+    details = e.get("details", {})
+    return (
+        f"  {_format_ts(e.get('time', ''))}  {details.get('username', '')}  "
+        f"ip={_label_ip(e.get('ipAddress', ''))}  client={e.get('clientId', '')}"
+    )
 
 
 def _resolve_user(username: str) -> tuple[dict | None, str]:
@@ -348,18 +376,7 @@ def get_events(
 
     if not events:
         return "No events found"
-    lines = [f"Events ({len(events)}):"]
-    for e in events:
-        details = e.get("details", {})
-        error = e.get("error", "")
-        error_part = f"  error={error}" if error else ""
-        lines.append(
-            f"  {_format_ts(e.get('time', 0))}  {e['type']}  "
-            f"user={details.get('username', e.get('userId', ''))}  "
-            f"ip={_label_ip(e.get('ipAddress', ''))}  "
-            f"client={e.get('clientId', '')}{error_part}"
-        )
-    return "\n".join(lines)
+    return _format_event_list(f"Events ({len(events)}):", events, _format_user_event)
 
 
 def _fetch_login_events(date_from: str = "", date_to: str = "") -> tuple[list[dict], list[dict]]:
@@ -589,14 +606,11 @@ def get_password_update_events(date_from: str = "", date_to: str = "", max_resul
     )
     if not events:
         return "No password update events found"
-    lines = [f"Password updates ({len(events)}):"]
-    for e in events:
-        details = e.get("details", {})
-        lines.append(
-            f"  {_format_ts(e.get('time', ''))}  {details.get('username', '')}  "
-            f"ip={_label_ip(e.get('ipAddress', ''))}  client={e.get('clientId', '')}"
-        )
-    return "\n".join(lines)
+    return _format_event_list(
+        f"Password updates ({len(events)}):",
+        events,
+        _format_password_event,
+    )
 
 
 # ---- Admin event tools ----
@@ -674,10 +688,11 @@ def get_admin_events(
     )
     if not events:
         return "No admin events found"
-    lines = [f"Admin events ({len(events)}):"]
-    for e in events:
-        lines.append(_format_admin_event(e, max_repr=max_repr))
-    return "\n".join(lines)
+    return _format_event_list(
+        f"Admin events ({len(events)}):",
+        events,
+        lambda e: _format_admin_event(e, max_repr=max_repr),
+    )
 
 
 @mcp.tool()
@@ -717,10 +732,11 @@ def get_user_attribute_history(
     )
     if not events:
         return f"No attribute change events for {username}"
-    lines = [f"Attribute history for {username} ({len(events)}):"]
-    for e in events:
-        lines.append(_format_admin_event(e, max_repr=max_repr))
-    return "\n".join(lines)
+    return _format_event_list(
+        f"Attribute history for {username} ({len(events)}):",
+        events,
+        lambda e: _format_admin_event(e, max_repr=max_repr),
+    )
 
 
 # ---- Session tools ----

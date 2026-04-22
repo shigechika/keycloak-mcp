@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     share the pagination loop between `get_events_all` and
     `get_admin_events_all` (and to reuse for any future paginated
     endpoints).
+  - Extract `_format_event_list` wrapper plus module-level
+    `_format_user_event` / `_format_password_event` formatters so the
+    four event-listing tools (`get_events`, `get_password_update_events`,
+    `get_admin_events`, `get_user_attribute_history`) now share a
+    uniform render path. Formatters are independently unit-tested.
 
 ### Removed
 - Unreachable code flagged by a repo-wide audit:

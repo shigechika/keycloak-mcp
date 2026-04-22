@@ -35,6 +35,64 @@ class TestFormatTs:
         assert "1970" in result or "1969" in result  # depends on TZ
 
 
+class TestFormatEventList:
+    def test_header_plus_formatted_events(self):
+        events = [{"n": 1}, {"n": 2}, {"n": 3}]
+        result = server._format_event_list("Items (3):", events, lambda e: f"  row {e['n']}")
+        assert result == "Items (3):\n  row 1\n  row 2\n  row 3"
+
+    def test_empty_events(self):
+        """Header-only is fine — this path is not hit in practice because callers
+        short-circuit on empty lists, but the helper should still do the right thing."""
+        assert server._format_event_list("Items (0):", [], lambda e: "x") == "Items (0):"
+
+
+class TestFormatUserEvent:
+    def test_has_all_fields(self):
+        e = {
+            "time": 1700000000000,
+            "type": "LOGIN",
+            "details": {"username": "alice@example.com"},
+            "ipAddress": "192.0.2.1",
+            "clientId": "shibboleth",
+        }
+        out = server._format_user_event(e)
+        assert "LOGIN" in out
+        assert "alice@example.com" in out
+        assert "192.0.2.1" in out
+        assert "shibboleth" in out
+        assert "error=" not in out
+
+    def test_error_field_surfaced(self):
+        e = {
+            "time": 1700000000000,
+            "type": "LOGIN_ERROR",
+            "details": {"username": "alice@example.com"},
+            "ipAddress": "192.0.2.1",
+            "clientId": "shibboleth",
+            "error": "invalid_user_credentials",
+        }
+        assert "error=invalid_user_credentials" in server._format_user_event(e)
+
+    def test_falls_back_to_userid_when_username_missing(self):
+        e = {"time": 0, "type": "LOGIN", "details": {}, "userId": "uuid-1", "ipAddress": "", "clientId": ""}
+        assert "user=uuid-1" in server._format_user_event(e)
+
+
+class TestFormatPasswordEvent:
+    def test_renders_key_fields(self):
+        e = {
+            "time": 1700000000000,
+            "details": {"username": "alice@example.com"},
+            "ipAddress": "192.0.2.1",
+            "clientId": "shibboleth",
+        }
+        out = server._format_password_event(e)
+        assert "alice@example.com" in out
+        assert "192.0.2.1" in out
+        assert "shibboleth" in out
+
+
 class TestCountUsers:
     @patch.object(server, "_kc")
     def test_output(self, mock):
