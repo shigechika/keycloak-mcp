@@ -156,7 +156,9 @@ def reset_passwords_batch(csv_text: str, temporary: bool = False) -> str:
             # Log details to stderr for operator diagnostics; keep the
             # tool response free of internal URLs or httpx repr payloads.
             print(f"reset_passwords_batch: {username}: {type(e).__name__}: {e}", file=sys.stderr)
-            results.append(f"  NG  {username} — request failed ({type(e).__name__})")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            label = f"{type(e).__name__} {status}" if status else type(e).__name__
+            results.append(f"  NG  {username} — request failed ({label})")
             continue
         if generated:
             results.append(f"  OK  {username} — reset (generated: {password})")
