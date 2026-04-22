@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal refactor (no behavior change):
+  - Extract `_resolve_user(username)` in `server.py` to replace the
+    "look up user, return 'not found' if missing" preamble duplicated
+    across eight MCP tools. Single source of truth for the wording.
+  - Extract `KeyCloakClient._paginate(path, params, page_size)` to
+    share the pagination loop between `get_events_all` and
+    `get_admin_events_all` (and to reuse for any future paginated
+    endpoints).
+
 ### Removed
 - Unreachable code flagged by a repo-wide audit:
   - `KeyCloakClient.get_user(user_id)` — no MCP tool ever called it (the
