@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Unreachable code flagged by a repo-wide audit:
+  - `KeyCloakClient.get_user(user_id)` — no MCP tool ever called it (the
+    `get_user` tool uses `get_user_by_username` instead).
+  - `KeyCloakClient.get_user_roles` — no callers.
+  - `_mock_kc` test helper — no callers.
+
 ### Security
 - `reset_passwords_batch` no longer echoes caller-supplied passwords in its
   response. Each successful row is now explicitly labeled
