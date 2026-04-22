@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-22
+
 ### Added
 - Admin events support. Two new MCP tools expose the KeyCloak Admin Events
   endpoint (`/admin/realms/{realm}/admin-events`), which is distinct from the
@@ -20,11 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     do **not** surface in `get_events` because they are not `UPDATE_PROFILE`
     or `UPDATE_PASSWORD` events.
   Output shows `time / operationType / resourceType / resourcePath / admin
-  userId / admin ip / representation (truncated to 200 chars)`.
+  userId / admin ip / representation`.
 - CI: `windows-latest × Python 3.12` smoke-test job in `ci.yml` and `release.yml`
   to guard against Windows-specific regressions (cf.
   modelcontextprotocol/python-sdk#2433). `fail-fast: false` keeps Linux
   results visible if the Windows job trips. (#1, #2)
+
+### Changed
+- Admin event `representation` truncation is now configurable via `max_repr`
+  on both admin-event tools. Default raised from 200 → 500 chars (long user
+  representations were hiding custom attributes like `temp_password`).
+  Semantics: `max_repr > 0` truncates to N chars, `== 0` omits the
+  representation, `< 0` includes it in full.
 
 ### Fixed
 - Tests: skip `TestFormatTs::test_zero` on Windows — `datetime.fromtimestamp(0)`
@@ -81,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User, group, session, client, event, and security-monitoring tools.
 - Pytest + respx test suite.
 
-[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.1.0...v0.2.0
