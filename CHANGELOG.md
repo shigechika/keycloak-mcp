@@ -126,7 +126,6 @@ Keep-a-Changelog style.
 - User, group, session, client, event, and security-monitoring tools.
 - Pytest + respx test suite.
 
-[Unreleased]: https://github.com/shigechika/keycloak-mcp/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/shigechika/keycloak-mcp/compare/v0.2.1...v0.3.0
