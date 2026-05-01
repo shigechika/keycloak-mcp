@@ -57,15 +57,34 @@ def main() -> None:
     if args.check:
         sys.exit(_check_config())
 
-    # On Windows, stdout defaults to text mode which translates \n → \r\n and
-    # corrupts the NDJSON wire format (modelcontextprotocol/python-sdk#2433).
-    # Force binary mode on both file descriptors so the MCP SDK's writes pass
-    # through unchanged.
+    # On Windows, the MCP SDK creates TextIOWrapper(sys.stdout.buffer) with the
+    # default newline=None, which translates \n → \r\n and corrupts the NDJSON
+    # wire format (modelcontextprotocol/python-sdk#2433).
+    # Intercept writes at the RawIOBase level to strip \r\n → \n, then rebuild
+    # sys.stdout so that the SDK's sys.stdout.buffer access gets our wrapper.
     if sys.platform == "win32":
-        import msvcrt
+        import io
 
-        msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-        msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+        class _CRStripper(io.RawIOBase):
+            """Strip \\r\\n → \\n inserted by TextIOWrapper on Windows."""
+
+            def __init__(self, fd: int) -> None:
+                self._fd = fd
+
+            def writable(self) -> bool:
+                return True
+
+            def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+                data = bytes(b).replace(b"\r\n", b"\n")
+                os.write(self._fd, data)
+                return len(b)
+
+            def fileno(self) -> int:
+                return self._fd
+
+        sys.stdout.flush()
+        _buf = io.BufferedWriter(_CRStripper(sys.stdout.fileno()))
+        sys.stdout = io.TextIOWrapper(_buf, encoding="utf-8", errors="replace", newline="\n")
 
     try:
         mcp.run(transport="stdio")
