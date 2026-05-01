@@ -1,6 +1,7 @@
 """Tests for MCP server tools."""
 
 import sys
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -33,6 +34,40 @@ class TestFormatTs:
     def test_zero(self):
         result = server._format_ts(0)
         assert "1970" in result or "1969" in result  # depends on TZ
+
+
+class TestDefaultDateFrom:
+    def test_explicit_date_returned_unchanged(self):
+        assert server._default_date_from("2026-01-01") == "2026-01-01"
+
+    def test_empty_returns_date_string(self):
+        result = server._default_date_from("")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        assert dt < datetime.now()
+
+    def test_env_zero_returns_none(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "0")
+        assert server._default_date_from("") is None
+
+    def test_env_negative_returns_none(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "-1")
+        assert server._default_date_from("") is None
+
+    def test_env_custom_hours(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "48")
+        result = server._default_date_from("")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        expected = datetime.now() - timedelta(hours=48)
+        assert abs((dt - expected).total_seconds()) < 86400  # within 1 day tolerance
+
+    def test_env_invalid_falls_back_to_24h(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "foo")
+        result = server._default_date_from("")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        assert dt < datetime.now()
 
 
 class TestFormatEventList:
