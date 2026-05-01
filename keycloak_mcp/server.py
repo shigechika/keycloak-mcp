@@ -10,7 +10,7 @@ import string
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 
@@ -22,8 +22,8 @@ def _format_ts(epoch_ms: int | str) -> str:
     """Convert epoch milliseconds to local datetime string."""
     try:
         ts = int(epoch_ms) / 1000
-        return datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError, OSError):
+        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
         return str(epoch_ms)
 
 
@@ -445,13 +445,13 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
     failure_by_hour: Counter[int] = Counter()
     for e in success:
         try:
-            hour = datetime.fromtimestamp(int(e["time"]) / 1000).astimezone().hour
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=timezone.utc).astimezone().hour
             success_by_hour[hour] += 1
         except (KeyError, ValueError, TypeError):
             pass
     for e in failure:
         try:
-            hour = datetime.fromtimestamp(int(e["time"]) / 1000).astimezone().hour
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=timezone.utc).astimezone().hour
             failure_by_hour[hour] += 1
         except (KeyError, ValueError, TypeError):
             pass
