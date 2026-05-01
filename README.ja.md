@@ -99,6 +99,7 @@ pip install -e .
 | `KEYCLOAK_CLIENT_ID` | Service Account のクライアント ID | *必須* |
 | `KEYCLOAK_CLIENT_SECRET` | クライアントシークレット | *必須* |
 | `KEYCLOAK_SITES_INI` | IP→拠点名ラベル用の INI ファイル（後述） | *未設定* |
+| `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | `date_from` 省略時のイベント検索範囲（時間）。`0` で全履歴スキャン（イベント数が多いレルムではハングの原因になる）。 | `24` |
 
 ### KeyCloak 側のクライアント設定
 
