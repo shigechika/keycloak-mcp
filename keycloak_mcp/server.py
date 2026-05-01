@@ -4,12 +4,13 @@ Uses Client Credentials Grant — no user password or TOTP required.
 Infinispan-safe: does not create user sessions or use userinfo endpoint.
 """
 
+import os
 import secrets
 import string
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from mcp.server.fastmcp import FastMCP
 
@@ -24,6 +25,21 @@ def _format_ts(epoch_ms: int | str) -> str:
         return datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError, OSError):
         return str(epoch_ms)
+
+
+def _default_date_from(date_from: str) -> str | None:
+    """Return date_from if given; otherwise compute a default lookback window.
+
+    The default window is controlled by KEYCLOAK_DEFAULT_DATE_FROM_HOURS
+    (default 24).  Set it to 0 or a negative value to disable the default
+    and fall back to the original "scan all history" behaviour.
+    """
+    if date_from:
+        return date_from
+    hours = int(os.environ.get("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "24"))
+    if hours <= 0:
+        return None
+    return (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d")
 
 
 mcp = FastMCP("keycloak-mcp")
@@ -349,7 +365,7 @@ def get_events(
         username: Filter by exact username (email). Resolved to user ID internally.
         client_id: Filter by client ID (SP name).
         ip_address: Filter events by source IP (client-side filter).
-        date_from: Start date (YYYY-MM-DD).
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 50).
     """
@@ -365,7 +381,7 @@ def get_events(
         event_type=event_type or None,
         user=user_id,
         client_id=client_id or None,
-        date_from=date_from or None,
+        date_from=_default_date_from(date_from),
         date_to=date_to or None,
         max_results=max_results,
     )
@@ -381,8 +397,8 @@ def get_events(
 
 def _fetch_login_events(date_from: str = "", date_to: str = "") -> tuple[list[dict], list[dict]]:
     """Fetch all LOGIN and LOGIN_ERROR events with pagination."""
-    success = _kc().get_events_all("LOGIN", date_from=date_from or None, date_to=date_to or None)
-    failure = _kc().get_events_all("LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None)
+    success = _kc().get_events_all("LOGIN", date_from=_default_date_from(date_from), date_to=date_to or None)
+    failure = _kc().get_events_all("LOGIN_ERROR", date_from=_default_date_from(date_from), date_to=date_to or None)
     return success, failure
 
 
@@ -391,7 +407,7 @@ def get_login_stats(date_from: str = "", date_to: str = "") -> str:
     """Get login success/failure statistics with full pagination.
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
     success, failure = _fetch_login_events(date_from, date_to)
@@ -417,7 +433,7 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
     """Get login statistics broken down by hour (local time).
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
     success, failure = _fetch_login_events(date_from, date_to)
@@ -454,11 +470,11 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
     """Get login failure statistics broken down by source IP.
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
         top: Number of top IPs to show (default 20).
     """
-    failure = _kc().get_events_all("LOGIN_ERROR", date_from=date_from or None, date_to=date_to or None)
+    failure = _kc().get_events_all("LOGIN_ERROR", date_from=_default_date_from(date_from), date_to=date_to or None)
     if not failure:
         return "No login failures found"
 
@@ -480,7 +496,7 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
     """Get login statistics broken down by client (SP).
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
     success, failure = _fetch_login_events(date_from, date_to)
@@ -513,13 +529,13 @@ def detect_login_loops(
     times within `window_seconds`.
 
     Args:
-        date_from: Start date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
         threshold: Minimum logins within the window to flag (default 10).
         window_seconds: Time window in seconds (default 60).
         top: Number of top users to show (default 20). Use 0 for all.
     """
-    events = _kc().get_events_all("LOGIN", date_from=date_from or None, date_to=date_to or None)
+    events = _kc().get_events_all("LOGIN", date_from=_default_date_from(date_from), date_to=date_to or None)
     if not events:
         return "No LOGIN events found"
 
@@ -594,13 +610,13 @@ def get_password_update_events(date_from: str = "", date_to: str = "", max_resul
     """Get password update events.
 
     Args:
-        date_from: Start date (YYYY-MM-DD).
-        date_to: End date (YYYY-MM-DD). Empty for all.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
+        date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 100).
     """
     events = _kc().get_events(
         "UPDATE_PASSWORD",
-        date_from=date_from or None,
+        date_from=_default_date_from(date_from),
         date_to=date_to or None,
         max_results=max_results,
     )
@@ -671,7 +687,7 @@ def get_admin_events(
         operation_types: Comma-separated list of CREATE, UPDATE, DELETE, ACTION.
         resource_types: Comma-separated list of USER, CLIENT, ROLE, GROUP, REALM_ROLE, etc.
         resource_path: Filter by resource path (e.g. "users/{userId}").
-        date_from: Start date (YYYY-MM-DD).
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 50).
         max_repr: Max chars of the representation field. 0 = omit, -1 = full.
@@ -682,7 +698,7 @@ def get_admin_events(
         operation_types=op_list,
         resource_types=rt_list,
         resource_path=resource_path or None,
-        date_from=date_from or None,
+        date_from=_default_date_from(date_from),
         date_to=date_to or None,
         max_results=max_results,
     )
@@ -713,7 +729,7 @@ def get_user_attribute_history(
 
     Args:
         username: Exact username (email).
-        date_from: Start date (YYYY-MM-DD).
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD).
         max_results: Maximum results (default 100).
         max_repr: Max chars of the representation field. 0 = omit, -1 = full.
@@ -726,7 +742,7 @@ def get_user_attribute_history(
         operation_types=["UPDATE", "ACTION"],
         resource_types=["USER"],
         resource_path=f"users/{user_id}",
-        date_from=date_from or None,
+        date_from=_default_date_from(date_from),
         date_to=date_to or None,
         max_results=max_results,
     )

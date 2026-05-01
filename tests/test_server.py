@@ -35,6 +35,39 @@ class TestFormatTs:
         assert "1970" in result or "1969" in result  # depends on TZ
 
 
+class TestDefaultDateFrom:
+    def test_explicit_date_returned_unchanged(self):
+        assert server._default_date_from("2026-01-01") == "2026-01-01"
+
+    def test_empty_returns_date_string(self):
+        result = server._default_date_from("")
+        assert result is not None
+        # Must be a valid YYYY-MM-DD string in the past
+        from datetime import datetime
+
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        assert dt < datetime.now()
+
+    def test_env_zero_returns_none(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "0")
+        assert server._default_date_from("") is None
+
+    def test_env_negative_returns_none(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "-1")
+        assert server._default_date_from("") is None
+
+    def test_env_custom_hours(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "48")
+        result = server._default_date_from("")
+        assert result is not None
+        from datetime import datetime, timedelta
+
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        # Should be approximately 2 days ago
+        expected = datetime.now() - timedelta(hours=48)
+        assert abs((dt - expected).total_seconds()) < 86400  # within 1 day tolerance
+
+
 class TestFormatEventList:
     def test_header_plus_formatted_events(self):
         events = [{"n": 1}, {"n": 2}, {"n": 3}]
