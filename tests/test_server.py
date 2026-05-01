@@ -1,6 +1,7 @@
 """Tests for MCP server tools."""
 
 import sys
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -42,9 +43,6 @@ class TestDefaultDateFrom:
     def test_empty_returns_date_string(self):
         result = server._default_date_from("")
         assert result is not None
-        # Must be a valid YYYY-MM-DD string in the past
-        from datetime import datetime
-
         dt = datetime.strptime(result, "%Y-%m-%d")
         assert dt < datetime.now()
 
@@ -60,12 +58,16 @@ class TestDefaultDateFrom:
         monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "48")
         result = server._default_date_from("")
         assert result is not None
-        from datetime import datetime, timedelta
-
         dt = datetime.strptime(result, "%Y-%m-%d")
-        # Should be approximately 2 days ago
         expected = datetime.now() - timedelta(hours=48)
         assert abs((dt - expected).total_seconds()) < 86400  # within 1 day tolerance
+
+    def test_env_invalid_falls_back_to_24h(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "foo")
+        result = server._default_date_from("")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%d")
+        assert dt < datetime.now()
 
 
 class TestFormatEventList:

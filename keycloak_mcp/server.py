@@ -36,7 +36,10 @@ def _default_date_from(date_from: str) -> str | None:
     """
     if date_from:
         return date_from
-    hours = int(os.environ.get("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "24"))
+    try:
+        hours = int(os.environ.get("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "24"))
+    except ValueError:
+        hours = 24
     if hours <= 0:
         return None
     return (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d")
