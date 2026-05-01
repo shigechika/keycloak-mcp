@@ -57,6 +57,16 @@ def main() -> None:
     if args.check:
         sys.exit(_check_config())
 
+    # On Windows, stdout defaults to text mode which translates \n → \r\n and
+    # corrupts the NDJSON wire format (modelcontextprotocol/python-sdk#2433).
+    # Force binary mode on both file descriptors so the MCP SDK's writes pass
+    # through unchanged.
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+        msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+
     try:
         mcp.run(transport="stdio")
     except KeyboardInterrupt:
