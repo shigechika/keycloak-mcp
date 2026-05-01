@@ -99,6 +99,7 @@ pip install -e .
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
 | `KEYCLOAK_SITES_INI` | INI file for IP-to-site labeling (see below) | *unset* |
+| `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | Default look-back window for event tools when `date_from` is omitted. Set to `0` to scan full history (can hang on large realms). | `24` |
 
 ### KeyCloak client setup
 
