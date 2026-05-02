@@ -206,8 +206,6 @@ keycloak-mcp             # Run the MCP STDIO server (default)
 
 No-argument mode is the normal one — that's how MCP clients launch it.
 
-`--check` exit codes: `0` success, `1` configuration error, `2` authentication error.
-
 ## Development
 
 ```bash
