@@ -94,7 +94,7 @@ pip install -e .
 
 | Variable | Description | Default |
 |---|---|---|
-| `KEYCLOAK_URL` | Base URL, e.g. `https://sso.example.com` | *required* |
+| `KEYCLOAK_URL` | Base URL, e.g. `https://keycloak.example.com` | *required* |
 | `KEYCLOAK_REALM` | Realm name | `master` |
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
@@ -106,6 +106,22 @@ pip install -e .
 1. Create a new client in the KeyCloak admin console.
 2. Turn on **Client authentication** and **Service account roles**.
 3. Give it `view-users`, `view-events`, `view-clients`, and — only if you need password reset — `manage-users`.
+
+### Verify your setup
+
+After setting the environment variables, run `--check` to confirm authentication works before wiring it into an MCP client:
+
+```bash
+export KEYCLOAK_URL=https://keycloak.example.com
+export KEYCLOAK_REALM=my-realm
+export KEYCLOAK_CLIENT_ID=keycloak-mcp
+export KEYCLOAK_CLIENT_SECRET=your-secret
+keycloak-mcp --check
+# HTTP Request: POST https://keycloak.example.com/realms/my-realm/protocol/openid-connect/token "HTTP/1.1 200 OK"
+# OK: authenticated to https://keycloak.example.com/admin/realms/my-realm
+```
+
+Exit codes: `0` success, `1` configuration error (missing variable), `2` authentication error.
 
 ### IP-to-site labeling (optional)
 
@@ -139,7 +155,8 @@ In `.mcp.json`:
       "type": "stdio",
       "command": "keycloak-mcp",
       "env": {
-        "KEYCLOAK_URL": "https://sso.example.com",
+        "KEYCLOAK_URL": "https://keycloak.example.com",
+        "KEYCLOAK_REALM": "my-realm",
         "KEYCLOAK_CLIENT_ID": "keycloak-mcp",
         "KEYCLOAK_CLIENT_SECRET": ""
       }
@@ -158,7 +175,8 @@ In `claude_desktop_config.json`:
     "keycloak-mcp": {
       "command": "keycloak-mcp",
       "env": {
-        "KEYCLOAK_URL": "https://sso.example.com",
+        "KEYCLOAK_URL": "https://keycloak.example.com",
+        "KEYCLOAK_REALM": "my-realm",
         "KEYCLOAK_CLIENT_ID": "keycloak-mcp",
         "KEYCLOAK_CLIENT_SECRET": ""
       }
@@ -170,7 +188,8 @@ In `claude_desktop_config.json`:
 ### From a shell
 
 ```bash
-export KEYCLOAK_URL=https://sso.example.com
+export KEYCLOAK_URL=https://keycloak.example.com
+export KEYCLOAK_REALM=my-realm
 export KEYCLOAK_CLIENT_ID=keycloak-mcp
 export KEYCLOAK_CLIENT_SECRET=your-secret
 keycloak-mcp

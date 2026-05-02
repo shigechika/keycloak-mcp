@@ -94,7 +94,7 @@ pip install -e .
 
 | 変数 | 説明 | デフォルト |
 |---|---|---|
-| `KEYCLOAK_URL` | ベース URL（例: `https://sso.example.com`） | *必須* |
+| `KEYCLOAK_URL` | ベース URL（例: `https://keycloak.example.com`） | *必須* |
 | `KEYCLOAK_REALM` | Realm 名 | `master` |
 | `KEYCLOAK_CLIENT_ID` | Service Account のクライアント ID | *必須* |
 | `KEYCLOAK_CLIENT_SECRET` | クライアントシークレット | *必須* |
@@ -106,6 +106,22 @@ pip install -e .
 1. KeyCloak 管理コンソールで新しいクライアントを作成。
 2. **Client authentication** と **Service account roles** をオンにする。
 3. Realm ロールとして `view-users` / `view-events` / `view-clients` を付与。パスワードリセットも使うなら `manage-users` も追加。
+
+### 設定の確認
+
+環境変数を設定したら、MCP クライアントに組み込む前に `--check` で認証が通るか確認する:
+
+```bash
+export KEYCLOAK_URL=https://keycloak.example.com
+export KEYCLOAK_REALM=my-realm
+export KEYCLOAK_CLIENT_ID=keycloak-mcp
+export KEYCLOAK_CLIENT_SECRET=your-secret
+keycloak-mcp --check
+# HTTP Request: POST https://keycloak.example.com/realms/my-realm/protocol/openid-connect/token "HTTP/1.1 200 OK"
+# OK: authenticated to https://keycloak.example.com/admin/realms/my-realm
+```
+
+終了コード: `0` 成功、`1` 設定エラー（変数未定義）、`2` 認証エラー。
 
 ### IP→拠点ラベル（任意）
 
@@ -139,7 +155,8 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
       "type": "stdio",
       "command": "keycloak-mcp",
       "env": {
-        "KEYCLOAK_URL": "https://sso.example.com",
+        "KEYCLOAK_URL": "https://keycloak.example.com",
+        "KEYCLOAK_REALM": "my-realm",
         "KEYCLOAK_CLIENT_ID": "keycloak-mcp",
         "KEYCLOAK_CLIENT_SECRET": ""
       }
@@ -158,7 +175,8 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
     "keycloak-mcp": {
       "command": "keycloak-mcp",
       "env": {
-        "KEYCLOAK_URL": "https://sso.example.com",
+        "KEYCLOAK_URL": "https://keycloak.example.com",
+        "KEYCLOAK_REALM": "my-realm",
         "KEYCLOAK_CLIENT_ID": "keycloak-mcp",
         "KEYCLOAK_CLIENT_SECRET": ""
       }
@@ -170,7 +188,8 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
 ### シェルから直接
 
 ```bash
-export KEYCLOAK_URL=https://sso.example.com
+export KEYCLOAK_URL=https://keycloak.example.com
+export KEYCLOAK_REALM=my-realm
 export KEYCLOAK_CLIENT_ID=keycloak-mcp
 export KEYCLOAK_CLIENT_SECRET=your-secret
 keycloak-mcp
