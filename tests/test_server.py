@@ -690,15 +690,39 @@ class TestGetUserAttributeHistory:
         assert call.kwargs["resource_types"] == ["USER"]
 
 
+_SAMPLE_LOGIN_EVENT = {
+    "type": "LOGIN",
+    "time": 1700000000000,
+    "details": {"username": "u"},
+    "ipAddress": "10.0.0.1",
+    "clientId": "app",
+}
+_SAMPLE_FAILURE_EVENT = {
+    "type": "LOGIN_ERROR",
+    "time": 1700000000000,
+    "details": {"username": "x"},
+    "ipAddress": "1.2.3.4",
+    "clientId": "app",
+}
+
+
 class TestDailyBrief:
-    def _make_kc_mock(self, mock, *, success_count=5, failure_events=None, pw_updates=None, admin_evts=None, sessions=None):
+    def _make_kc_mock(
+        self,
+        mock,
+        *,
+        success_count=5,
+        failure_events=None,
+        pw_updates=None,
+        admin_evts=None,
+        sessions=None,
+    ):
         failure_events = failure_events or []
         pw_updates = pw_updates or []
         admin_evts = admin_evts or []
         sessions = sessions or [{"clientId": "xflow", "active": "3"}]
-        _login_event = {"type": "LOGIN", "time": 1700000000000, "details": {"username": "u"}, "ipAddress": "10.0.0.1", "clientId": "app"}
         mock.return_value.get_events_all.side_effect = [
-            [_login_event] * success_count,
+            [_SAMPLE_LOGIN_EVENT] * success_count,
             failure_events,
             pw_updates,
         ]
@@ -716,9 +740,7 @@ class TestDailyBrief:
 
     @patch.object(server, "_kc")
     def test_warning_brute_force(self, mock):
-        failures = [
-            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
-        ] * 60
+        failures = [_SAMPLE_FAILURE_EVENT] * 60
         self._make_kc_mock(mock, failure_events=failures)
         result = server.daily_brief(ip_failure_threshold=50)
         assert "## WARNING" in result
@@ -728,18 +750,14 @@ class TestDailyBrief:
     @patch.object(server, "_kc")
     def test_at_threshold_is_warning(self, mock):
         """Exactly ip_failure_threshold failures (>=) should trigger WARNING."""
-        failures = [
-            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
-        ] * 50
+        failures = [_SAMPLE_FAILURE_EVENT] * 50
         self._make_kc_mock(mock, failure_events=failures)
         result = server.daily_brief(ip_failure_threshold=50)
         assert "## WARNING" in result
 
     @patch.object(server, "_kc")
     def test_below_threshold_is_ok(self, mock):
-        failures = [
-            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
-        ] * 10
+        failures = [_SAMPLE_FAILURE_EVENT] * 10
         self._make_kc_mock(mock, failure_events=failures)
         result = server.daily_brief(ip_failure_threshold=50)
         assert "## OK" in result
@@ -786,10 +804,8 @@ class TestDailyBrief:
         """7 IPs all above threshold must trigger WARNING; top 5 appear in WARNINGS."""
         failures = []
         for i in range(7):
-            failures += [
-                {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"},
-                 "ipAddress": f"10.0.0.{i + 1}", "clientId": "app"}
-            ] * (60 - i)  # 60, 59, …, 54 — all above threshold=50
+            event = {**_SAMPLE_FAILURE_EVENT, "ipAddress": f"10.0.0.{i + 1}"}
+            failures += [event] * (60 - i)  # 60, 59, …, 54 — all above threshold=50
         self._make_kc_mock(mock, failure_events=failures)
         result = server.daily_brief(ip_failure_threshold=50)
         assert "## WARNING" in result
