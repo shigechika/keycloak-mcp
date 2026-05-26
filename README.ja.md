@@ -67,6 +67,12 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | `list_clients` | Realm の SAML / OIDC クライアント |
 | `get_realm_roles` | Realm ロール |
 
+### 朝のパトロール
+
+| ツール | 説明 |
+|------|------|
+| `daily_brief` | 朝のワンショット健全性チェック。ログイン統計・ブルートフォース IP・アクティブセッション・パスワード更新・管理者操作を1つの Markdown サマリーにまとめる。`ip_failure_threshold`（既定 50）件以上の失敗 IP は **WARNING**、API エラーは **CRITICAL** として表示。`since_hours` で遡及時間を指定（既定 18 h）。 |
+
 ## インストール
 
 ```bash
