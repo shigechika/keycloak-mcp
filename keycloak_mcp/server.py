@@ -855,16 +855,16 @@ def daily_brief(
 
     try:
         success, failure = _fetch_login_events(date_from=date_from)
-        pw_updates = _kc().get_events("UPDATE_PASSWORD", date_from=date_from, max_results=200)
-        admin_evts = _kc().get_admin_events(
+        pw_updates = _kc().get_events_all("UPDATE_PASSWORD", date_from=date_from)
+        admin_evts = _kc().get_admin_events_all(
             operation_types=["CREATE", "UPDATE", "DELETE"],
             resource_types=["USER", "CLIENT"],
             date_from=date_from,
-            max_results=100,
         )
         session_stats = _kc().get_session_stats()
     except Exception as exc:
-        return f"## daily_brief — {now_str}\n## CRITICAL — API error: {exc}"
+        print(f"daily_brief: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return f"## daily_brief — {now_str}\n## CRITICAL — {type(exc).__name__}"
 
     by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
     top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common(5) if cnt >= ip_failure_threshold]

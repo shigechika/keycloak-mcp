@@ -696,12 +696,13 @@ class TestDailyBrief:
         pw_updates = pw_updates or []
         admin_evts = admin_evts or []
         sessions = sessions or [{"clientId": "xflow", "active": "3"}]
+        _login_event = {"type": "LOGIN", "time": 1700000000000, "details": {"username": "u"}, "ipAddress": "10.0.0.1", "clientId": "app"}
         mock.return_value.get_events_all.side_effect = [
-            [{"type": "LOGIN", "time": 1700000000000, "details": {"username": "u"}, "ipAddress": "10.0.0.1", "clientId": "app"}] * success_count,
+            [_login_event] * success_count,
             failure_events,
+            pw_updates,
         ]
-        mock.return_value.get_events.return_value = pw_updates
-        mock.return_value.get_admin_events.return_value = admin_evts
+        mock.return_value.get_admin_events_all.return_value = admin_evts
         mock.return_value.get_session_stats.return_value = sessions
 
     @patch.object(server, "_kc")
@@ -725,6 +726,16 @@ class TestDailyBrief:
         assert "1.2.3.4" in result
 
     @patch.object(server, "_kc")
+    def test_at_threshold_is_warning(self, mock):
+        """Exactly ip_failure_threshold failures (>=) should trigger WARNING."""
+        failures = [
+            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
+        ] * 50
+        self._make_kc_mock(mock, failure_events=failures)
+        result = server.daily_brief(ip_failure_threshold=50)
+        assert "## WARNING" in result
+
+    @patch.object(server, "_kc")
     def test_below_threshold_is_ok(self, mock):
         failures = [
             {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
@@ -735,26 +746,26 @@ class TestDailyBrief:
         assert "### WARNINGS" not in result
 
     @patch.object(server, "_kc")
-    def test_critical_on_api_error(self, mock):
+    def test_critical_on_api_error(self, mock, capsys):
         mock.return_value.get_events_all.side_effect = RuntimeError("connection refused")
         result = server.daily_brief()
         assert "## CRITICAL" in result
-        assert "connection refused" in result
+        assert "RuntimeError" in result
+        assert "connection refused" not in result
+        assert "connection refused" in capsys.readouterr().err
 
     @patch.object(server, "_kc")
-    def test_since_hours_not_delegated_to_env(self, mock):
+    def test_since_hours_uses_param_not_env(self, mock, monkeypatch):
         """since_hours must bypass _default_date_from (env var must not override)."""
-        import os
-        os.environ["KEYCLOAK_DEFAULT_DATE_FROM_HOURS"] = "1"
-        try:
-            self._make_kc_mock(mock)
-            server.daily_brief(since_hours=48)
-            calls = mock.return_value.get_events_all.call_args_list
-            # Both LOGIN and LOGIN_ERROR calls should carry a date_from
-            for call in calls:
-                assert call.kwargs.get("date_from") is not None
-        finally:
-            del os.environ["KEYCLOAK_DEFAULT_DATE_FROM_HOURS"]
+        from datetime import datetime, timedelta
+        monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "1")
+        self._make_kc_mock(mock)
+        server.daily_brief(since_hours=48)
+        calls = mock.return_value.get_events_all.call_args_list
+        expected_date = (datetime.now() - timedelta(hours=48)).strftime("%Y-%m-%d")
+        # LOGIN and LOGIN_ERROR calls (first two) must carry the 48h date, not 1h
+        for call in calls[:2]:
+            assert call.kwargs.get("date_from") == expected_date
 
     @patch.object(server, "_kc")
     def test_password_updates_shown(self, mock):
