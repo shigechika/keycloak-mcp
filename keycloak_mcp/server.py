@@ -868,9 +868,7 @@ def daily_brief(
 
     by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
     top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common() if cnt >= ip_failure_threshold][:5]
-    warnings: list[str] = [
-        f"[LOGIN_FAILURE] {cnt} failures from {_label_ip(ip)}" for ip, cnt in top_offenders
-    ]
+    warnings: list[str] = [f"[LOGIN_FAILURE] {cnt} failures from {_label_ip(ip)}" for ip, cnt in top_offenders]
 
     total_sessions = sum(int(s.get("active", 0)) for s in session_stats)
 

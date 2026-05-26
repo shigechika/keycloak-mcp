@@ -776,6 +776,7 @@ class TestDailyBrief:
     def test_since_hours_uses_param_not_env(self, mock, monkeypatch):
         """since_hours must bypass _default_date_from (env var must not override)."""
         from datetime import datetime, timedelta
+
         monkeypatch.setenv("KEYCLOAK_DEFAULT_DATE_FROM_HOURS", "1")
         self._make_kc_mock(mock)
         server.daily_brief(since_hours=48)
