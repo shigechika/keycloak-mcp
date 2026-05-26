@@ -780,3 +780,18 @@ class TestDailyBrief:
         self._make_kc_mock(mock, admin_evts=[SAMPLE_ADMIN_EVENT])
         result = server.daily_brief()
         assert "Admin events: 1" in result
+
+    @patch.object(server, "_kc")
+    def test_warning_more_than_five_ips_above_threshold(self, mock):
+        """7 IPs all above threshold must trigger WARNING; top 5 appear in WARNINGS."""
+        failures = []
+        for i in range(7):
+            failures += [
+                {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"},
+                 "ipAddress": f"10.0.0.{i + 1}", "clientId": "app"}
+            ] * (60 - i)  # 60, 59, …, 54 — all above threshold=50
+        self._make_kc_mock(mock, failure_events=failures)
+        result = server.daily_brief(ip_failure_threshold=50)
+        assert "## WARNING" in result
+        assert "10.0.0.1" in result  # top IP flagged
+        assert "10.0.0.5" in result  # 5th IP flagged

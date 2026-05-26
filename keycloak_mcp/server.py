@@ -867,7 +867,7 @@ def daily_brief(
         return f"## daily_brief — {now_str}\n## CRITICAL — {type(exc).__name__}"
 
     by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
-    top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common(5) if cnt >= ip_failure_threshold]
+    top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common() if cnt >= ip_failure_threshold][:5]
     warnings: list[str] = [
         f"[LOGIN_FAILURE] {cnt} failures from {_label_ip(ip)}" for ip, cnt in top_offenders
     ]
@@ -920,7 +920,6 @@ def daily_brief(
     if admin_evts:
         for e in admin_evts[:10]:
             lines.append(f"- {_format_admin_event(e, max_repr=0)}")
-    lines.append("")
 
     return "\n".join(lines)
 
