@@ -688,3 +688,84 @@ class TestGetUserAttributeHistory:
         assert call.kwargs["resource_path"] == "users/user-uuid-1"
         assert call.kwargs["operation_types"] == ["UPDATE", "ACTION"]
         assert call.kwargs["resource_types"] == ["USER"]
+
+
+class TestDailyBrief:
+    def _make_kc_mock(self, mock, *, success_count=5, failure_events=None, pw_updates=None, admin_evts=None, sessions=None):
+        failure_events = failure_events or []
+        pw_updates = pw_updates or []
+        admin_evts = admin_evts or []
+        sessions = sessions or [{"clientId": "xflow", "active": "3"}]
+        mock.return_value.get_events_all.side_effect = [
+            [{"type": "LOGIN", "time": 1700000000000, "details": {"username": "u"}, "ipAddress": "10.0.0.1", "clientId": "app"}] * success_count,
+            failure_events,
+        ]
+        mock.return_value.get_events.return_value = pw_updates
+        mock.return_value.get_admin_events.return_value = admin_evts
+        mock.return_value.get_session_stats.return_value = sessions
+
+    @patch.object(server, "_kc")
+    def test_ok_status(self, mock):
+        self._make_kc_mock(mock)
+        result = server.daily_brief()
+        assert "## OK" in result
+        assert "daily_brief" in result
+        assert "Login" in result
+        assert "Active sessions" in result
+
+    @patch.object(server, "_kc")
+    def test_warning_brute_force(self, mock):
+        failures = [
+            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
+        ] * 60
+        self._make_kc_mock(mock, failure_events=failures)
+        result = server.daily_brief(ip_failure_threshold=50)
+        assert "## WARNING" in result
+        assert "### WARNINGS" in result
+        assert "1.2.3.4" in result
+
+    @patch.object(server, "_kc")
+    def test_below_threshold_is_ok(self, mock):
+        failures = [
+            {"type": "LOGIN_ERROR", "time": 1700000000000, "details": {"username": "x"}, "ipAddress": "1.2.3.4", "clientId": "app"}
+        ] * 10
+        self._make_kc_mock(mock, failure_events=failures)
+        result = server.daily_brief(ip_failure_threshold=50)
+        assert "## OK" in result
+        assert "### WARNINGS" not in result
+
+    @patch.object(server, "_kc")
+    def test_critical_on_api_error(self, mock):
+        mock.return_value.get_events_all.side_effect = RuntimeError("connection refused")
+        result = server.daily_brief()
+        assert "## CRITICAL" in result
+        assert "connection refused" in result
+
+    @patch.object(server, "_kc")
+    def test_since_hours_not_delegated_to_env(self, mock):
+        """since_hours must bypass _default_date_from (env var must not override)."""
+        import os
+        os.environ["KEYCLOAK_DEFAULT_DATE_FROM_HOURS"] = "1"
+        try:
+            self._make_kc_mock(mock)
+            server.daily_brief(since_hours=48)
+            calls = mock.return_value.get_events_all.call_args_list
+            # Both LOGIN and LOGIN_ERROR calls should carry a date_from
+            for call in calls:
+                assert call.kwargs.get("date_from") is not None
+        finally:
+            del os.environ["KEYCLOAK_DEFAULT_DATE_FROM_HOURS"]
+
+    @patch.object(server, "_kc")
+    def test_password_updates_shown(self, mock):
+        pw = [{"time": 1700000000000, "details": {"username": "alice"}, "ipAddress": "10.0.0.1", "clientId": "app"}]
+        self._make_kc_mock(mock, pw_updates=pw)
+        result = server.daily_brief()
+        assert "Password updates: 1" in result
+        assert "alice" in result
+
+    @patch.object(server, "_kc")
+    def test_admin_events_shown(self, mock):
+        self._make_kc_mock(mock, admin_evts=[SAMPLE_ADMIN_EVENT])
+        result = server.daily_brief()
+        assert "Admin events: 1" in result

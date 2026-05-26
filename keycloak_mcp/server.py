@@ -822,5 +822,108 @@ def get_realm_roles() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def daily_brief(
+    since_hours: int = 18,
+    ip_failure_threshold: int = 50,
+) -> str:
+    """Run a morning Keycloak health check.
+
+    Checks (all scoped to the last ``since_hours`` hours):
+    - Login statistics (success / failure totals, top failing IPs)
+    - Active sessions by client
+    - Password update events
+    - Admin events (CREATE/UPDATE/DELETE on USER/CLIENT resources)
+
+    A single IP with login failures >= ``ip_failure_threshold`` is flagged
+    as WARNING (possible brute-force).
+
+    ``since_hours`` defaults to 18 (≈ previous 15:00 for a 09:00 morning run).
+
+    Output tiers:
+    - CRITICAL — API connection failure
+    - WARNING  — anomalies detected
+    - OK       — clean
+
+    Args:
+        since_hours: Look-back window in hours (default 18).
+        ip_failure_threshold: Login failures from a single IP that triggers a
+                              WARNING (default 50).
+    """
+    now_str = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
+    date_from = (datetime.now() - timedelta(hours=since_hours)).strftime("%Y-%m-%d")
+
+    try:
+        success, failure = _fetch_login_events(date_from=date_from)
+        pw_updates = _kc().get_events("UPDATE_PASSWORD", date_from=date_from, max_results=200)
+        admin_evts = _kc().get_admin_events(
+            operation_types=["CREATE", "UPDATE", "DELETE"],
+            resource_types=["USER", "CLIENT"],
+            date_from=date_from,
+            max_results=100,
+        )
+        session_stats = _kc().get_session_stats()
+    except Exception as exc:
+        return f"## daily_brief — {now_str}\n## CRITICAL — API error: {exc}"
+
+    by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
+    top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common(5) if cnt >= ip_failure_threshold]
+    warnings: list[str] = [
+        f"[LOGIN_FAILURE] {cnt} failures from {_label_ip(ip)}" for ip, cnt in top_offenders
+    ]
+
+    total_sessions = sum(int(s.get("active", 0)) for s in session_stats)
+
+    lines: list[str] = [
+        f"## daily_brief — {now_str} (since -{since_hours}h)",
+        f"## {'WARNING' if warnings else 'OK'} — "
+        f"login {len(success)} OK / {len(failure)} NG, "
+        f"sessions {total_sessions}, "
+        f"pw-updates {len(pw_updates)}, "
+        f"admin-events {len(admin_evts)}",
+        "",
+    ]
+
+    if warnings:
+        lines.append("### WARNINGS")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    lines += [
+        "### Login",
+        f"- Success: {len(success)}",
+        f"- Failure: {len(failure)} ({len(by_ip)} unique IPs)",
+    ]
+    if by_ip:
+        lines.append("- Top failing IPs:")
+        for ip, cnt in by_ip.most_common(5):
+            lines.append(f"  - {cnt:5d}  {_label_ip(ip)}")
+    lines.append("")
+
+    lines.append("### Active sessions")
+    if session_stats:
+        lines.append(f"- Total: {total_sessions}")
+        for s in sorted(session_stats, key=lambda x: -int(x.get("active", 0)))[:5]:
+            lines.append(f"  - {int(s.get('active', 0)):5d}  {s['clientId']}")
+    else:
+        lines.append("- No active sessions")
+    lines.append("")
+
+    lines.append(f"### Password updates: {len(pw_updates)}")
+    if pw_updates:
+        for e in pw_updates[:10]:
+            lines.append(f"- {_format_password_event(e)}")
+    lines.append("")
+
+    lines.append(f"### Admin events: {len(admin_evts)}")
+    if admin_evts:
+        for e in admin_evts[:10]:
+            lines.append(f"- {_format_admin_event(e, max_repr=0)}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
