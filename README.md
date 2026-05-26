@@ -67,6 +67,12 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 | `list_clients` | SAML and OIDC clients in the realm |
 | `get_realm_roles` | Realm-level roles |
 
+### Morning Patrol
+
+| Tool | Description |
+|------|-------------|
+| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, active sessions, password updates, and admin events in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
+
 ## Setup
 
 ```bash
