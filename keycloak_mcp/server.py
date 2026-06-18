@@ -58,6 +58,12 @@ def _kc() -> KeyCloakClient:
     return _client
 
 
+def reset_client() -> None:
+    """Drop the cached client so the next call rebuilds and re-authenticates."""
+    global _client
+    _client = None
+
+
 def _site_classifier() -> SiteClassifier:
     """Lazy-initialize the site classifier."""
     global _sites
@@ -114,6 +120,61 @@ def _resolve_user(username: str) -> tuple[dict | None, str]:
     if not user:
         return None, f"User '{username}' not found"
     return user, ""
+
+
+# ---- Health ----
+
+
+@mcp.tool()
+def health_check() -> dict:
+    """Report server version and KeyCloak backend connectivity / authentication.
+
+    Call this at session start (or after a tool-call timeout) to confirm the MCP
+    is up, see which version is running, and verify the KeyCloak Admin API is
+    reachable and the service account can authenticate. Lightweight: it acquires
+    an admin access token via the Client Credentials Grant (reusing the cached
+    client) and does NOT enumerate users, events, or sessions.
+
+    Always returns the same keys: ``status`` (healthy / degraded / error),
+    ``service``, ``version``, ``keycloak_url`` (configured base URL, empty if
+    unset), ``realm`` (configured realm), ``keycloak_version`` (None — not exposed
+    by a cheap call), and ``auth`` (ok / error / missing-env). On a degraded or
+    error result, ``detail`` carries the reason.
+    """
+    from keycloak_mcp import __version__
+
+    # Fixed shape: every key is present regardless of outcome, so callers can
+    # read it uniformly and rely on `status` to judge health.
+    result: dict = {
+        "status": "healthy",
+        "service": "keycloak-mcp",
+        "version": __version__,
+        "keycloak_url": os.environ.get("KEYCLOAK_URL", ""),
+        "realm": os.environ.get("KEYCLOAK_REALM", ""),
+        "keycloak_version": None,
+        "auth": "unknown",
+    }
+
+    # Backend: build the client (reads required env in TokenManager) and acquire
+    # a token via Client Credentials Grant. A single token request is the lightest
+    # proof that the service account can talk to the realm — no user/event scans.
+    try:
+        client = _kc()
+        client.auth.get_token()
+        result["auth"] = "ok"
+    except KeyError as e:
+        result["status"] = "error"
+        result["auth"] = "missing-env"
+        result["detail"] = f"Missing environment variable: {e}"
+    except Exception as e:  # noqa: BLE001 — surface any backend failure, never raise
+        reset_client()
+        result["status"] = "degraded"
+        result["auth"] = "error"
+        # Keep internal URLs / httpx payloads out of the response; report the type.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        result["detail"] = f"{type(e).__name__} {status}" if status else type(e).__name__
+
+    return result
 
 
 # ---- User tools ----

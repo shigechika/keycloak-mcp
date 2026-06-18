@@ -71,6 +71,7 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 
 | Tool | Description |
 |------|-------------|
+| `health_check` | Report the running server version and verify the KeyCloak backend is reachable and the service account can authenticate. Lightweight (one token request; no user/event/session scans). Returns a fixed-shape dict with `status` (healthy / degraded / error), `auth` (ok / error / missing-env), and the configured URL/realm. |
 | `daily_brief` | One-shot morning health check: login stats, brute-force IPs, active sessions, password updates, and admin events in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
 
 ## Setup
