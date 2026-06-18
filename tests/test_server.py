@@ -812,3 +812,72 @@ class TestDailyBrief:
         assert "## WARNING" in result
         assert "10.0.0.1" in result  # top IP flagged
         assert "10.0.0.5" in result  # 5th IP flagged
+
+
+class TestHealthCheck:
+    def teardown_method(self):
+        # health_check caches/clears the module client; keep tests isolated.
+        server.reset_client()
+
+    @patch.object(server, "_kc")
+    def test_healthy_auth_ok(self, mock):
+        mock.return_value.auth.get_token.return_value = "fake-token"
+        result = server.health_check()
+        assert result["status"] == "healthy"
+        assert result["service"] == "keycloak-mcp"
+        assert result["auth"] == "ok"
+        assert "detail" not in result
+        # Fixed shape: every documented key is always present.
+        for key in ("status", "service", "version", "keycloak_url", "realm", "keycloak_version", "auth"):
+            assert key in result
+        assert result["keycloak_version"] is None
+
+    @patch.object(server, "_kc")
+    def test_surfaces_configured_url_and_realm(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_URL", "https://sso.example.com")
+        monkeypatch.setenv("KEYCLOAK_REALM", "test-realm")
+        mock.return_value.auth.get_token.return_value = "fake-token"
+        result = server.health_check()
+        assert result["keycloak_url"] == "https://sso.example.com"
+        assert result["realm"] == "test-realm"
+
+    @patch.object(server, "_kc")
+    def test_missing_env(self, mock):
+        # TokenManager raises KeyError when a required env var is absent.
+        mock.side_effect = KeyError("KEYCLOAK_CLIENT_SECRET")
+        result = server.health_check()
+        assert result["status"] == "error"
+        assert result["auth"] == "missing-env"
+        assert "KEYCLOAK_CLIENT_SECRET" in result["detail"]
+
+    @patch.object(server, "_kc")
+    def test_backend_error_degraded(self, mock):
+        mock.return_value.auth.get_token.side_effect = RuntimeError("connection refused")
+        result = server.health_check()
+        assert result["status"] == "degraded"
+        assert result["auth"] == "error"
+        assert result["detail"] == "RuntimeError"
+
+    @patch.object(server, "_kc")
+    def test_backend_error_does_not_leak_internals(self, mock):
+        """Backend failure detail must not echo internal URLs / httpx payloads."""
+        leak = "https://internal-sso.example.corp/realms/foo/protocol/openid-connect/token"
+        mock.return_value.auth.get_token.side_effect = RuntimeError(f"Connection failed: {leak}")
+        result = server.health_check()
+        assert leak not in result["detail"]
+        assert result["detail"] == "RuntimeError"
+
+    @patch.object(server, "_kc")
+    def test_backend_error_includes_http_status(self, mock):
+        """When the error carries an HTTP status, it's included (no body/URL)."""
+
+        class FakeHTTPError(Exception):
+            def __init__(self, status):
+                super().__init__("boom")
+                self.response = type("R", (), {"status_code": status})()
+
+        mock.return_value.auth.get_token.side_effect = FakeHTTPError(401)
+        result = server.health_check()
+        assert result["status"] == "degraded"
+        assert result["detail"] == "FakeHTTPError 401"
+        assert "boom" not in result["detail"]
