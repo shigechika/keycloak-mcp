@@ -21,6 +21,38 @@ class TestSearchUsers:
         assert result[0]["username"] == "alice@example.com"
 
 
+class TestListUsersAll:
+    def test_enabled_only_param(self, mock_api):
+        route = mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[SAMPLE_USER]))
+        result = KeyCloakClient().list_users_all(enabled_only=True, page_size=100)
+        assert len(result) == 1
+        assert "enabled=true" in str(route.calls[0].request.url)
+
+    def test_pagination(self, mock_api):
+        page1 = [{"id": str(i)} for i in range(3)]
+        page2 = [{"id": "99"}]
+        mock_api.get(f"{ADMIN_BASE}/users").mock(
+            side_effect=[
+                httpx.Response(200, json=page1),
+                httpx.Response(200, json=page2),
+            ]
+        )
+        result = KeyCloakClient().list_users_all(page_size=3)
+        assert len(result) == 4
+
+
+class TestGetUserCredentials:
+    def test_returns_credentials(self, mock_api):
+        creds = [
+            {"id": "c1", "type": "password", "createdDate": 1700000000000},
+            {"id": "c2", "type": "otp", "userLabel": "phone", "createdDate": 1700000001000},
+        ]
+        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1/credentials").mock(return_value=httpx.Response(200, json=creds))
+        result = KeyCloakClient().get_user_credentials("user-uuid-1")
+        assert len(result) == 2
+        assert result[1]["type"] == "otp"
+
+
 class TestGetUserByUsername:
     def test_found(self, mock_api):
         mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[SAMPLE_USER]))

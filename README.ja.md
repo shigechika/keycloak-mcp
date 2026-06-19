@@ -22,6 +22,13 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | `get_user_sessions` | ユーザのアクティブセッション（時刻はローカルタイム） |
 | `logout_user` | ユーザのセッションをすべて強制終了 |
 
+### MFA・クレデンシャル
+
+| Tool | Description |
+|------|-------------|
+| `get_user_credentials` | 1 ユーザに設定されたクレデンシャル種別。`otp` があれば TOTP/HOTP 設定済み |
+| `get_totp_users` | レルム全体の TOTP 普及状況。`otp` クレデンシャルを持つユーザ数と割合（任意でユーザ一覧）を出力。全ユーザを列挙して 1 人ずつクレデンシャルを読むため N+1（`max_users` で件数を制限可能） |
+
 ### グループ
 
 | ツール | 説明 |

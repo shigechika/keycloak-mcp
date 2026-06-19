@@ -337,6 +337,94 @@ def logout_user(username: str) -> str:
     return f"Logged out {username} ({len(sessions)} session(s) removed)"
 
 
+# ---- MFA / credential tools ----
+
+# KeyCloak credential `type` value for TOTP/HOTP authenticators.
+_OTP_TYPE = "otp"
+
+
+def _format_credential(c: dict) -> str:
+    """Format a single credential record from `/users/{id}/credentials`."""
+    label = c.get("userLabel", "")
+    label_part = f"  label={label}" if label else ""
+    return f"  {c.get('type', '?'):24s}  created={_format_ts(c.get('createdDate', ''))}{label_part}"
+
+
+@mcp.tool()
+def get_user_credentials(username: str) -> str:
+    """List the credential types configured for one user (password, otp, webauthn, …).
+
+    Use this to check a single user's MFA status: an ``otp`` credential means
+    TOTP/HOTP is configured. Reads ``/users/{id}/credentials`` (read-only; does
+    not create a session).
+
+    Args:
+        username: Exact username (email).
+    """
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    creds = _kc().get_user_credentials(u["id"])
+    if not creds:
+        return f"{username}: no credentials configured"
+    types = sorted({c.get("type", "?") for c in creds})
+    has_otp = "yes" if any(c.get("type") == _OTP_TYPE for c in creds) else "no"
+    lines = [
+        f"Credentials for {username}:",
+        f"  TOTP (otp): {has_otp}",
+        f"  Types: {', '.join(types)}",
+        "",
+        *(_format_credential(c) for c in creds),
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_totp_users(
+    enabled_only: bool = True,
+    list_users: bool = True,
+    max_users: int = 0,
+) -> str:
+    """Report how many users have TOTP (OTP) configured across the realm.
+
+    Enumerates users and inspects each one's credentials for an ``otp`` entry.
+    KeyCloak has no bulk credential endpoint, so this makes one credential
+    request per user (N+1) — expect it to be slow on large realms; bound it with
+    ``max_users``.
+
+    Args:
+        enabled_only: Only scan enabled users (default True).
+        list_users: Include the list of usernames with TOTP (default True).
+        max_users: Cap the number of users scanned (0 = all).
+    """
+    users = _kc().list_users_all(enabled_only=enabled_only)
+    if max_users > 0:
+        users = users[:max_users]
+    if not users:
+        return "No users found"
+
+    otp_users: list[str] = []
+    for u in users:
+        creds = _kc().get_user_credentials(u["id"])
+        if any(c.get("type") == _OTP_TYPE for c in creds):
+            otp_users.append(u.get("username", u["id"]))
+
+    total = len(users)
+    with_otp = len(otp_users)
+    pct = (with_otp / total * 100) if total else 0.0
+    scope = "enabled users" if enabled_only else "users"
+    lines = [
+        f"TOTP (OTP) usage (scanned {total} {scope}):",
+        f"  With TOTP:    {with_otp} ({pct:.1f}%)",
+        f"  Without TOTP: {total - with_otp}",
+    ]
+    if list_users and otp_users:
+        lines.append("")
+        lines.append("Users with TOTP:")
+        lines.extend(f"  {name}" for name in sorted(otp_users))
+    return "\n".join(lines)
+
+
 # ---- Brute force tools ----
 
 

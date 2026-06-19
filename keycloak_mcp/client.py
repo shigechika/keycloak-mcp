@@ -67,6 +67,25 @@ class KeyCloakClient:
         """Search users by username, email, or name."""
         return self._get("/users", {"search": query, "max": max_results})
 
+    def list_users_all(self, enabled_only: bool = False, page_size: int = 100) -> list[dict]:
+        """List every user in the realm with automatic pagination.
+
+        :param enabled_only: When True, ask KeyCloak to return only enabled users.
+        :param page_size: Users fetched per request.
+        """
+        params: dict[str, Any] = {}
+        if enabled_only:
+            params["enabled"] = "true"
+        return self._paginate("/users", params, page_size)
+
+    def get_user_credentials(self, user_id: str) -> list[dict]:
+        """Get a user's configured credentials (password, otp, webauthn, …).
+
+        Each entry has a ``type`` field; ``"otp"`` means TOTP/HOTP is configured.
+        Read-only — does not create a user session.
+        """
+        return self._get(f"/users/{user_id}/credentials")
+
     def get_user_by_username(self, username: str) -> dict | None:
         """Get user by exact username. Returns None if not found."""
         users = self._get("/users", {"username": username, "exact": "true"})
