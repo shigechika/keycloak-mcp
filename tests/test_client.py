@@ -40,6 +40,16 @@ class TestListUsersAll:
         result = KeyCloakClient().list_users_all(page_size=3)
         assert len(result) == 4
 
+    def test_limit_short_circuits_enumeration(self, mock_api):
+        # A full page would normally trigger another request; the limit must stop
+        # enumeration and trim the result without fetching the next page.
+        route = mock_api.get(f"{ADMIN_BASE}/users").mock(
+            return_value=httpx.Response(200, json=[{"id": str(i)} for i in range(3)])
+        )
+        result = KeyCloakClient().list_users_all(page_size=3, limit=2)
+        assert len(result) == 2
+        assert route.call_count == 1
+
 
 class TestGetUserCredentials:
     def test_returns_credentials(self, mock_api):

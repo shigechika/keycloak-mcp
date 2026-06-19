@@ -169,7 +169,7 @@ class TestGetUserCredentials:
         ]
         result = server.get_user_credentials("alice@example.com")
         assert "TOTP (otp): yes" in result
-        assert "otp" in result
+        assert "Types: otp, password" in result
         assert "label=phone" in result
 
     @patch.object(server, "_kc")
@@ -215,11 +215,31 @@ class TestGetTotpUsers:
 
     @patch.object(server, "_kc")
     def test_max_users_caps_scan(self, mock):
-        mock.return_value.list_users_all.return_value = [{"id": str(i), "username": f"u{i}"} for i in range(5)]
+        # The client enforces the cap (via list_users_all limit=), so it returns
+        # only the capped set; the tool must pass the limit through and flag it.
+        mock.return_value.list_users_all.return_value = [{"id": str(i), "username": f"u{i}"} for i in range(2)]
         mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
         result = server.get_totp_users(max_users=2)
-        assert "scanned 2 enabled users" in result
+        mock.return_value.list_users_all.assert_called_once_with(enabled_only=True, limit=2)
+        assert "capped at max_users=2" in result
         assert mock.return_value.get_user_credentials.call_count == 2
+
+    @patch.object(server, "_kc")
+    def test_credential_lookup_error_is_counted(self, mock):
+        # One user's credential fetch raises; the scan continues and reports it.
+        mock.return_value.list_users_all.return_value = [
+            {"id": "1", "username": "alice@example.com"},
+            {"id": "2", "username": "bob@example.com"},
+        ]
+        mock.return_value.get_user_credentials.side_effect = [
+            [{"type": "otp"}],
+            RuntimeError("boom"),
+        ]
+        result = server.get_totp_users()
+        assert "With TOTP:    1 (100.0%)" in result  # percentage over the 1 successful scan
+        assert "Without TOTP: 0" in result
+        assert "Errors:       1" in result
+        assert "alice@example.com" in result
 
     @patch.object(server, "_kc")
     def test_no_users(self, mock):
