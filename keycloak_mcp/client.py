@@ -35,7 +35,7 @@ class KeyCloakClient:
         resp.raise_for_status()
         return resp.status_code
 
-    def _paginate(self, path: str, params: dict, page_size: int) -> list[dict]:
+    def _paginate(self, path: str, params: dict, page_size: int, max_total: int | None = None) -> list[dict]:
         """Page through a GET list endpoint until a short page arrives.
 
         Assumes the endpoint returns a bare JSON array of items, which is the
@@ -45,6 +45,9 @@ class KeyCloakClient:
 
         ``params`` is copied; this method sets ``max`` and ``first`` on the
         copy and leaves the caller's dict untouched.
+
+        :param max_total: Stop once this many items are collected and return at
+            most that many. ``None`` (default) pages through everything.
         """
         params = dict(params)
         params["max"] = page_size
@@ -53,6 +56,8 @@ class KeyCloakClient:
         while True:
             page = self._get(path, params)
             all_items.extend(page)
+            if max_total is not None and len(all_items) >= max_total:
+                return all_items[:max_total]
             if len(page) < page_size:
                 return all_items
             params["first"] += page_size
@@ -66,6 +71,28 @@ class KeyCloakClient:
     def search_users(self, query: str, max_results: int = 20) -> list[dict]:
         """Search users by username, email, or name."""
         return self._get("/users", {"search": query, "max": max_results})
+
+    def list_users_all(self, enabled_only: bool = False, page_size: int = 100, limit: int | None = None) -> list[dict]:
+        """List every user in the realm with automatic pagination.
+
+        :param enabled_only: When True, ask KeyCloak to return only enabled users.
+        :param page_size: Users fetched per request.
+        :param limit: Stop after collecting this many users (``None`` = all). The
+            enumeration itself short-circuits, so a small limit does not page
+            through the whole realm.
+        """
+        params: dict[str, Any] = {}
+        if enabled_only:
+            params["enabled"] = "true"
+        return self._paginate("/users", params, page_size, max_total=limit)
+
+    def get_user_credentials(self, user_id: str) -> list[dict]:
+        """Get a user's configured credentials (password, otp, webauthn, …).
+
+        Each entry has a ``type`` field; ``"otp"`` means TOTP/HOTP is configured.
+        Read-only — does not create a user session.
+        """
+        return self._get(f"/users/{user_id}/credentials")
 
     def get_user_by_username(self, username: str) -> dict | None:
         """Get user by exact username. Returns None if not found."""

@@ -22,6 +22,13 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | `get_user_sessions` | Active sessions for one user, timestamps in local time |
 | `logout_user` | Kill all active sessions for one user |
 
+### MFA / Credentials
+
+| Tool | Description |
+|------|-------------|
+| `get_user_credentials` | Credential types configured for one user; an `otp` entry means TOTP/HOTP is set up |
+| `get_totp_users` | Realm-wide TOTP adoption: how many users have an `otp` credential, with percentage and (optionally) the user list. Enumerates users and reads each one's credentials (N+1; bound with `max_users`) |
+
 ### Groups
 
 | Tool | Description |

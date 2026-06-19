@@ -159,6 +159,103 @@ class TestGetUser:
         assert "not found" in result
 
 
+class TestGetUserCredentials:
+    @patch.object(server, "_kc")
+    def test_with_otp(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_credentials.return_value = [
+            {"type": "password", "createdDate": 1700000000000},
+            {"type": "otp", "userLabel": "phone", "createdDate": 1700000001000},
+        ]
+        result = server.get_user_credentials("alice@example.com")
+        assert "TOTP (otp): yes" in result
+        assert "Types: otp, password" in result
+        assert "label=phone" in result
+
+    @patch.object(server, "_kc")
+    def test_without_otp(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_credentials.return_value = [
+            {"type": "password", "createdDate": 1700000000000},
+        ]
+        result = server.get_user_credentials("alice@example.com")
+        assert "TOTP (otp): no" in result
+
+    @patch.object(server, "_kc")
+    def test_no_credentials(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_credentials.return_value = []
+        result = server.get_user_credentials("alice@example.com")
+        assert "no credentials configured" in result
+
+    @patch.object(server, "_kc")
+    def test_user_not_found(self, mock):
+        mock.return_value.get_user_by_username.return_value = None
+        result = server.get_user_credentials("nobody")
+        assert "not found" in result
+
+
+class TestGetTotpUsers:
+    @patch.object(server, "_kc")
+    def test_counts_and_percentage(self, mock):
+        mock.return_value.list_users_all.return_value = [
+            {"id": "1", "username": "alice@example.com"},
+            {"id": "2", "username": "bob@example.com"},
+        ]
+        mock.return_value.get_user_credentials.side_effect = [
+            [{"type": "password"}, {"type": "otp"}],
+            [{"type": "password"}],
+        ]
+        result = server.get_totp_users()
+        assert "scanned 2 enabled users" in result
+        assert "With TOTP:    1 (50.0%)" in result
+        assert "Without TOTP: 1" in result
+        assert "alice@example.com" in result
+        assert "bob@example.com" not in result
+
+    @patch.object(server, "_kc")
+    def test_max_users_caps_scan(self, mock):
+        # The client enforces the cap (via list_users_all limit=), so it returns
+        # only the capped set; the tool must pass the limit through and flag it.
+        mock.return_value.list_users_all.return_value = [{"id": str(i), "username": f"u{i}"} for i in range(2)]
+        mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
+        result = server.get_totp_users(max_users=2)
+        mock.return_value.list_users_all.assert_called_once_with(enabled_only=True, limit=2)
+        assert "capped at max_users=2" in result
+        assert mock.return_value.get_user_credentials.call_count == 2
+
+    @patch.object(server, "_kc")
+    def test_credential_lookup_error_is_counted(self, mock):
+        # One user's credential fetch raises; the scan continues and reports it.
+        mock.return_value.list_users_all.return_value = [
+            {"id": "1", "username": "alice@example.com"},
+            {"id": "2", "username": "bob@example.com"},
+        ]
+        mock.return_value.get_user_credentials.side_effect = [
+            [{"type": "otp"}],
+            RuntimeError("boom"),
+        ]
+        result = server.get_totp_users()
+        assert "With TOTP:    1 (100.0%)" in result  # percentage over the 1 successful scan
+        assert "Without TOTP: 0" in result
+        assert "Errors:       1" in result
+        assert "alice@example.com" in result
+
+    @patch.object(server, "_kc")
+    def test_no_users(self, mock):
+        mock.return_value.list_users_all.return_value = []
+        result = server.get_totp_users()
+        assert "No users found" in result
+
+    @patch.object(server, "_kc")
+    def test_list_users_suppressed(self, mock):
+        mock.return_value.list_users_all.return_value = [{"id": "1", "username": "alice@example.com"}]
+        mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
+        result = server.get_totp_users(list_users=False)
+        assert "Users with TOTP:" not in result
+        assert "With TOTP:    1" in result
+
+
 class TestResetPassword:
     @patch.object(server, "_kc")
     def test_success(self, mock):
