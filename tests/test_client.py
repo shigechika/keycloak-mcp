@@ -1,6 +1,7 @@
 """Tests for KeyCloakClient."""
 
 import httpx
+import pytest
 
 from keycloak_mcp.client import KeyCloakClient
 
@@ -117,6 +118,79 @@ class TestGetGroupMembers:
         )
         result = KeyCloakClient().get_group_members("g1")
         assert len(result) == 2
+
+
+class TestGetGroupByPath:
+    def test_strips_leading_slash(self, mock_api):
+        group = {"id": "g-staff", "name": "教職員", "path": "/教職員"}
+        route = mock_api.get(f"{ADMIN_BASE}/group-by-path/教職員").mock(return_value=httpx.Response(200, json=group))
+        result = KeyCloakClient().get_group_by_path("/教職員")
+        assert result["id"] == "g-staff"
+        # Leading slash must be stripped: no '/group-by-path//' in the URL, and
+        # the (percent-encoded) group name follows 'group-by-path/'.
+        url = str(route.calls[0].request.url)
+        assert "group-by-path/" in url
+        assert "group-by-path//" not in url
+        assert "%E6%95%99%E8%81%B7%E5%93%A1" in url or "教職員" in url
+
+
+class TestGetGroupChildrenAll:
+    def test_pagination(self, mock_api):
+        page1 = [{"id": str(i)} for i in range(3)]
+        page2 = [{"id": "99"}]
+        mock_api.get(f"{ADMIN_BASE}/groups/g-staff/children").mock(
+            side_effect=[
+                httpx.Response(200, json=page1),
+                httpx.Response(200, json=page2),
+            ]
+        )
+        result = KeyCloakClient().get_group_children_all("g-staff", page_size=3)
+        assert len(result) == 4
+
+
+class TestGetGroupMembersAll:
+    def test_pagination(self, mock_api):
+        page1 = [{"id": str(i)} for i in range(3)]
+        page2 = [{"id": "99"}]
+        mock_api.get(f"{ADMIN_BASE}/groups/g-staff/members").mock(
+            side_effect=[
+                httpx.Response(200, json=page1),
+                httpx.Response(200, json=page2),
+            ]
+        )
+        result = KeyCloakClient().get_group_members_all("g-staff", page_size=3)
+        assert len(result) == 4
+
+
+class TestRetry:
+    def test_retries_transient_disconnect(self, mock_api, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.sleep", lambda *_: None)
+        route = mock_api.get(f"{ADMIN_BASE}/users/count").mock(
+            side_effect=[
+                httpx.RemoteProtocolError("Server disconnected without sending a response"),
+                httpx.Response(200, json=7),
+            ]
+        )
+        assert KeyCloakClient().count_users() == 7
+        assert route.call_count == 2
+
+    def test_retries_on_503(self, mock_api, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.sleep", lambda *_: None)
+        route = mock_api.get(f"{ADMIN_BASE}/users/count").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json=7),
+            ]
+        )
+        assert KeyCloakClient().count_users() == 7
+        assert route.call_count == 2
+
+    def test_does_not_retry_404(self, mock_api, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.sleep", lambda *_: None)
+        route = mock_api.get(f"{ADMIN_BASE}/users/count").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().count_users()
+        assert route.call_count == 1
 
 
 class TestGetEvents:
