@@ -1,10 +1,17 @@
 """KeyCloak Admin REST API client."""
 
+import time
 from typing import Any
 
 import httpx
 
 from .auth import TokenManager
+
+# HTTP status codes worth retrying: rate limiting and transient gateway/upstream
+# failures. Everything else (400/401/403/404, …) is re-raised immediately.
+_RETRYABLE_STATUS = {429, 502, 503, 504}
+_MAX_ATTEMPTS = 5
+_BACKOFF_BASE = 0.5
 
 
 class KeyCloakClient:
@@ -14,26 +21,55 @@ class KeyCloakClient:
         self.auth = TokenManager()
         self._http = httpx.Client(timeout=30)
 
+    def _send(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None) -> httpx.Response:
+        """Send a request with retry on transient failures.
+
+        Retries on ``httpx.TransportError`` (connection drops, timeouts,
+        ``RemoteProtocolError`` from a server disconnecting mid-response, …) and
+        on ``HTTPStatusError`` whose status is in :data:`_RETRYABLE_STATUS`
+        (429/502/503/504). Other HTTP status errors are re-raised immediately.
+
+        Token refresh (``self.auth.headers()`` → ``get_token()``) happens inside
+        the retry loop, so a transient failure during token refresh is retried
+        too; httpx auto-reconnects on the next request after a drop.
+
+        Backoff is exponential: ``0.5 * 2**attempt`` seconds (0.5, 1, 2, 4).
+        """
+        url = f"{self.auth.admin_base}{path}"
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                resp = self._http.request(
+                    method,
+                    url,
+                    headers=self.auth.headers(),
+                    params=params or {},
+                    json=json,
+                )
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in _RETRYABLE_STATUS:
+                    raise
+                last_exc = exc
+            except httpx.TransportError as exc:
+                last_exc = exc
+            if attempt < _MAX_ATTEMPTS - 1:
+                time.sleep(_BACKOFF_BASE * 2**attempt)
+        assert last_exc is not None
+        raise last_exc
+
     def _get(self, path: str, params: dict | None = None) -> Any:
         """GET request to Admin API."""
-        url = f"{self.auth.admin_base}{path}"
-        resp = self._http.get(url, headers=self.auth.headers(), params=params or {})
-        resp.raise_for_status()
-        return resp.json()
+        return self._send("GET", path, params=params).json()
 
     def _put(self, path: str, json: dict | None = None) -> int:
         """PUT request to Admin API. Returns status code."""
-        url = f"{self.auth.admin_base}{path}"
-        resp = self._http.put(url, headers=self.auth.headers(), json=json or {})
-        resp.raise_for_status()
-        return resp.status_code
+        return self._send("PUT", path, json=json or {}).status_code
 
     def _delete(self, path: str) -> int:
         """DELETE request to Admin API. Returns status code."""
-        url = f"{self.auth.admin_base}{path}"
-        resp = self._http.delete(url, headers=self.auth.headers())
-        resp.raise_for_status()
-        return resp.status_code
+        return self._send("DELETE", path).status_code
 
     def _paginate(self, path: str, params: dict, page_size: int, max_total: int | None = None) -> list[dict]:
         """Page through a GET list endpoint until a short page arrives.
@@ -130,9 +166,30 @@ class KeyCloakClient:
         """List all groups."""
         return self._get("/groups", {"max": max_results})
 
-    def get_group_members(self, group_id: str, max_results: int = 100) -> list[dict]:
-        """Get members of a group."""
-        return self._get(f"/groups/{group_id}/members", {"max": max_results})
+    def get_group_by_path(self, path: str) -> dict:
+        """Get a group by its path (e.g. ``"/教職員"``).
+
+        A leading slash is accepted and stripped before building the URL, so
+        both ``"/教職員"`` and ``"教職員"`` resolve the same group. Returns the
+        group dict (``id``, ``name``, ``path``, possibly ``subGroups``).
+        """
+        return self._get(f"/group-by-path/{path.lstrip('/')}")
+
+    def get_group_children(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
+        """Get the direct child (sub-)groups of a group (single page)."""
+        return self._get(f"/groups/{group_id}/children", {"first": first, "max": max_results})
+
+    def get_group_children_all(self, group_id: str, page_size: int = 100) -> list[dict]:
+        """Get all child (sub-)groups of a group with automatic pagination."""
+        return self._paginate(f"/groups/{group_id}/children", {}, page_size)
+
+    def get_group_members(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
+        """Get members of a group (single page)."""
+        return self._get(f"/groups/{group_id}/members", {"first": first, "max": max_results})
+
+    def get_group_members_all(self, group_id: str, page_size: int = 100) -> list[dict]:
+        """Get all members of a group with automatic pagination."""
+        return self._paginate(f"/groups/{group_id}/members", {}, page_size)
 
     # --- Events ---
 
