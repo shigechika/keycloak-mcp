@@ -19,8 +19,10 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
@@ -40,7 +42,10 @@ Issues = "https://github.com/shigechika/keycloak-mcp/issues"
 dev = [
     "pytest",
     "pytest-cov",
-    "respx",
+    # respx < 0.22.0 is incompatible with httpx 0.28.x: the mocked routes
+    # (incl. the token endpoint in conftest) fail to match and every request
+    # raises respx AllMockedAssertionError. 0.22.0 added httpx 0.28 support.
+    "respx>=0.22.0",
     "ruff",
 ]
 
