@@ -41,6 +41,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | ツール | 説明 |
 |------|------|
 | `get_brute_force_status` | ブルートフォース検知でロック中かどうか |
+| `get_realm_security_defenses` | Realm のセキュリティ設定：ブルートフォース検知の有効/無効と閾値、パスワードポリシー、ブラウザセキュリティヘッダ |
 | `get_login_failures_by_ip` | 送信元 IP 別のログイン失敗数（`KEYCLOAK_SITES_INI` 設定時は拠点ラベル付き） |
 | `detect_login_loops` | 短時間に大量ログインしているユーザを検出（リダイレクトループの発見に） |
 

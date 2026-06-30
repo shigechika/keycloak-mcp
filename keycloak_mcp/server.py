@@ -988,6 +988,62 @@ def get_realm_roles() -> str:
 
 
 @mcp.tool()
+def get_realm_security_defenses() -> str:
+    """Show the realm's security-defense settings (read-only).
+
+    Reports the realm-level security configuration that the admin console
+    groups under "Security defenses":
+
+    - Brute force detection: whether it is enabled, the lockout strategy,
+      and the thresholds (max login failures, wait increments, reset window).
+    - Password policy.
+    - Browser security headers.
+
+    Use this to verify that brute-force protection is actually turned on and
+    how aggressively it locks accounts — the per-user ``get_brute_force_status``
+    only reflects runtime state, not whether the policy itself is configured.
+    """
+    realm = _kc().get_realm()
+    enabled = realm.get("bruteForceProtected", False)
+    lines = [
+        f"Security defenses for realm '{realm.get('realm', '?')}':",
+        "",
+        "## Brute force detection",
+        f"  Enabled:                {enabled}",
+    ]
+    if enabled:
+        lines += [
+            f"  Strategy:               {realm.get('bruteForceStrategy', 'MULTIPLE')}",
+            f"  Permanent lockout:      {realm.get('permanentLockout', False)}",
+            f"  Max login failures:     {realm.get('failureFactor', '?')}",
+            f"  Max temporary lockouts: {realm.get('maxTemporaryLockouts', 0)}",
+            f"  Wait increment:         {realm.get('waitIncrementSeconds', '?')}s",
+            f"  Max wait:               {realm.get('maxFailureWaitSeconds', '?')}s",
+            f"  Failure reset after:    {realm.get('maxDeltaTimeSeconds', '?')}s",
+            f"  Quick-login check:      {realm.get('quickLoginCheckMilliSeconds', '?')}ms",
+            f"  Min quick-login wait:   {realm.get('minimumQuickLoginWaitSeconds', '?')}s",
+        ]
+    else:
+        lines.append("  (brute-force protection is OFF — no lockout thresholds apply)")
+
+    lines += [
+        "",
+        "## Password policy",
+        f"  {realm.get('passwordPolicy') or '(none)'}",
+    ]
+
+    headers = realm.get("browserSecurityHeaders") or {}
+    set_headers = {k: v for k, v in headers.items() if v}
+    lines += ["", "## Browser security headers"]
+    if set_headers:
+        for k in sorted(set_headers):
+            lines.append(f"  {k}: {set_headers[k]}")
+    else:
+        lines.append("  (none configured)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def daily_brief(
     since_hours: int = 18,
     ip_failure_threshold: int = 50,

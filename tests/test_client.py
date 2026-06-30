@@ -330,3 +330,13 @@ class TestGetRealmRoles:
         mock_api.get(f"{ADMIN_BASE}/roles").mock(return_value=httpx.Response(200, json=roles))
         result = KeyCloakClient().get_realm_roles()
         assert len(result) == 1
+
+
+class TestGetRealm:
+    def test_returns_realm_representation(self, mock_api):
+        realm = {"realm": "test-realm", "bruteForceProtected": True, "failureFactor": 30}
+        # admin_base already points at the realm root, so the GET path is empty.
+        mock_api.get(ADMIN_BASE).mock(return_value=httpx.Response(200, json=realm))
+        result = KeyCloakClient().get_realm()
+        assert result["realm"] == "test-realm"
+        assert result["bruteForceProtected"] is True

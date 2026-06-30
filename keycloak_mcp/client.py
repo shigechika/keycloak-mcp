@@ -334,3 +334,17 @@ class KeyCloakClient:
     def get_realm_roles(self) -> list[dict]:
         """List realm roles."""
         return self._get("/roles")
+
+    # --- Realm ---
+
+    def get_realm(self) -> dict:
+        """Get the realm representation (configuration).
+
+        Read-only. The ``admin_base`` URL already points at the realm root
+        (``/admin/realms/{realm}``), so an empty path GETs the realm itself.
+        The returned ``RealmRepresentation`` carries the security-defense
+        settings: brute-force fields (``bruteForceProtected``,
+        ``failureFactor``, …), ``passwordPolicy``, and
+        ``browserSecurityHeaders``.
+        """
+        return self._get("")
