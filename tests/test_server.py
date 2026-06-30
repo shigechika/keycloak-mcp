@@ -515,6 +515,43 @@ class TestGetRealmRoles:
         assert "admin" in result
 
 
+class TestGetRealmSecurityDefenses:
+    @patch.object(server, "_kc")
+    def test_brute_force_enabled(self, mock):
+        mock.return_value.get_realm.return_value = {
+            "realm": "nu-sso",
+            "bruteForceProtected": True,
+            "permanentLockout": False,
+            "failureFactor": 30,
+            "waitIncrementSeconds": 60,
+            "maxFailureWaitSeconds": 900,
+            "passwordPolicy": "length(8)",
+            "browserSecurityHeaders": {
+                "contentSecurityPolicy": "frame-src 'self'",
+                "xFrameOptions": "SAMEORIGIN",
+                "strictTransportSecurity": "",
+            },
+        }
+        result = server.get_realm_security_defenses()
+        assert "Enabled:" in result and "True" in result
+        assert "Max login failures:     30" in result
+        assert "length(8)" in result
+        # Set headers are shown; empty ones are filtered out.
+        assert "xFrameOptions: SAMEORIGIN" in result
+        assert "strictTransportSecurity" not in result
+
+    @patch.object(server, "_kc")
+    def test_brute_force_disabled(self, mock):
+        mock.return_value.get_realm.return_value = {
+            "realm": "nu-sso",
+            "bruteForceProtected": False,
+        }
+        result = server.get_realm_security_defenses()
+        assert "OFF" in result
+        # Thresholds must not be printed when protection is off.
+        assert "Max login failures" not in result
+
+
 class TestLogoutUser:
     @patch.object(server, "_kc")
     def test_success(self, mock):
