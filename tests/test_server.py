@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from keycloak_mcp import server
 
 SAMPLE_USER = {
@@ -685,6 +687,92 @@ class TestGetIpActivity:
 
         first_call = mock.return_value.get_events_all.call_args_list[0]
         assert first_call.kwargs["date_from"] is not None
+
+    @patch.object(server, "_kc")
+    def test_summary_reconciles_with_widened_non_login_types(self, mock):
+        logout_events = [
+            {
+                "type": "LOGOUT",
+                "ipAddress": "10.0.0.1",
+                "time": 1000,
+                "details": {"username": "alice"},
+                "clientId": "app",
+            }
+        ]
+        mock.return_value.get_events_all.side_effect = [[], [], logout_events]
+        result = server.get_ip_activity("10.0.0.1", event_types="LOGIN,LOGIN_ERROR,LOGOUT")
+
+        assert result["summary"]["login_success"] == 1
+        assert result["summary"]["login_failure"] == 0
+        alice = result["users"][0]
+        assert alice["success"] == 1
+        assert alice["failure"] == 0
+
+    @patch.object(server, "_kc")
+    def test_max_timeline_zero_returns_empty_timeline(self, mock):
+        login_events = [
+            {
+                "type": "LOGIN",
+                "ipAddress": "10.0.0.1",
+                "time": 1000,
+                "details": {"username": "alice"},
+                "clientId": "app",
+            }
+        ]
+        mock.return_value.get_events_all.side_effect = [login_events, []]
+        result = server.get_ip_activity("10.0.0.1", max_timeline=0)
+
+        assert result["timeline"] == []
+        assert result["truncated"] is True
+        assert result["summary"]["total_events"] == 1
+
+    @patch.object(server, "_kc")
+    def test_empty_event_types_raises(self, mock):
+        with pytest.raises(ValueError):
+            server.get_ip_activity("10.0.0.1", event_types=" , ,")
+        mock.return_value.get_events_all.assert_not_called()
+
+    @patch.object(server, "_kc")
+    def test_user_key_handles_null_details(self, mock):
+        login_events = [
+            {
+                "type": "LOGIN",
+                "ipAddress": "10.0.0.1",
+                "time": 1000,
+                "details": None,
+                "userId": "uuid-1",
+                "clientId": "app",
+            }
+        ]
+        mock.return_value.get_events_all.side_effect = [login_events, []]
+        result = server.get_ip_activity("10.0.0.1")
+
+        assert result["users"] == [{"username": "uuid-1", "success": 1, "failure": 0, "errors": []}]
+
+    @patch.object(server, "_kc")
+    def test_clientid_default_consistent_across_clients_and_timeline(self, mock):
+        login_events = [{"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 1000, "details": {"username": "alice"}}]
+        mock.return_value.get_events_all.side_effect = [login_events, []]
+        result = server.get_ip_activity("10.0.0.1")
+
+        assert result["clients"] == [{"client_id": "unknown", "success": 1, "failure": 0}]
+        assert result["timeline"][0]["client_id"] == "unknown"
+
+    @patch.object(server, "_kc")
+    def test_ip_normalization_matches_equivalent_ipv6_forms(self, mock):
+        login_events = [
+            {
+                "type": "LOGIN",
+                "ipAddress": "0:0:0:0:0:0:0:1",
+                "time": 1000,
+                "details": {"username": "alice"},
+                "clientId": "app",
+            }
+        ]
+        mock.return_value.get_events_all.side_effect = [login_events, []]
+        result = server.get_ip_activity("::1")
+
+        assert result["summary"]["total_events"] == 1
 
 
 class TestGetLoginStatsByClient:
