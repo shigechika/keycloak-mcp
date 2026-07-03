@@ -3,8 +3,6 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-import pytest
-
 from keycloak_mcp import server
 
 SAMPLE_USER = {
@@ -435,9 +433,21 @@ class TestGetLoginFailuresByIp:
         assert "2 unique IPs" in result
         assert "10.0.0.1" in result
 
+    @patch.object(server, "_kc")
+    def test_groups_equivalent_ipv6_forms_together(self, mock):
+        failures = [
+            {"type": "LOGIN_ERROR", "ipAddress": "::1", "time": 1000},
+            {"type": "LOGIN_ERROR", "ipAddress": "0:0:0:0:0:0:0:1", "time": 2000},
+        ]
+        mock.return_value.get_events_all.return_value = failures
+        result = server.get_login_failures_by_ip()
+        assert "2 total" in result
+        assert "1 unique IPs" in result
+
 
 class TestGetIpActivity:
     _FIXED_KEYS = (
+        "error",
         "ip_address",
         "site",
         "sites_configured",
@@ -727,10 +737,21 @@ class TestGetIpActivity:
         assert result["summary"]["total_events"] == 1
 
     @patch.object(server, "_kc")
-    def test_empty_event_types_raises(self, mock):
-        with pytest.raises(ValueError):
-            server.get_ip_activity("10.0.0.1", event_types=" , ,")
+    def test_empty_event_types_returns_error_key(self, mock):
+        result = server.get_ip_activity("10.0.0.1", event_types=" , ,")
+
+        assert result["error"] is not None
+        assert "event_types" in result["error"]
+        assert result["summary"]["total_events"] == 0
+        assert result["timeline"] == []
         mock.return_value.get_events_all.assert_not_called()
+
+    @patch.object(server, "_kc")
+    def test_success_has_null_error(self, mock):
+        mock.return_value.get_events_all.side_effect = [[], []]
+        result = server.get_ip_activity("10.0.0.1")
+
+        assert result["error"] is None
 
     @patch.object(server, "_kc")
     def test_user_key_handles_null_details(self, mock):
@@ -1051,6 +1072,20 @@ class TestGetEventsIpFilter:
         result = server.get_events(ip_address="10.0.0.1")
         assert "alice" in result
         assert "bob" not in result
+
+    @patch.object(server, "_kc")
+    def test_filters_by_ip_normalizes_equivalent_ipv6_forms(self, mock):
+        mock.return_value.get_events.return_value = [
+            {
+                "type": "LOGIN",
+                "time": 1700000000000,
+                "details": {"username": "alice"},
+                "ipAddress": "0:0:0:0:0:0:0:1",
+                "clientId": "app",
+            }
+        ]
+        result = server.get_events(ip_address="::1")
+        assert "alice" in result
 
 
 class TestGetUserSessionsFormatted:

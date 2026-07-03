@@ -575,9 +575,11 @@ def get_events(
         max_results=max_results,
     )
 
-    # Client-side IP filter
+    # Client-side IP filter (normalized so equivalent notations, e.g. IPv6
+    # "::1" vs "0:0:0:0:0:0:0:1", still match)
     if ip_address:
-        events = [e for e in events if e.get("ipAddress") == ip_address]
+        target_ip = _normalize_ip(ip_address)
+        events = [e for e in events if _normalize_ip(e.get("ipAddress", "")) == target_ip]
 
     if not events:
         return "No events found"
@@ -667,12 +669,14 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
     if not failure:
         return "No login failures found"
 
-    by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
+    # Group by normalized IP so equivalent notations (e.g. IPv6 "::1" vs
+    # "0:0:0:0:0:0:0:1") aren't fragmented into separate rows.
+    by_ip: Counter[str] = Counter(_normalize_ip(e.get("ipAddress", "unknown")) for e in failure)
     lines = [f"Login failures by IP ({len(failure)} total, {len(by_ip)} unique IPs):"]
     lines.append(f"  {'Count':>6s}  {'IP':<40s}  {'Site':<16s}  {'Last seen'}")
     for ip, count in by_ip.most_common(top):
         last = max(
-            (e.get("time", 0) for e in failure if e.get("ipAddress") == ip),
+            (e.get("time", 0) for e in failure if _normalize_ip(e.get("ipAddress", "unknown")) == ip),
             default=0,
         )
         site = _site_classifier().classify(ip) or "external"
@@ -702,6 +706,10 @@ def get_ip_activity(
     always present, even when zero events match.
 
     Returns:
+        error: None on success. Set to a descriptive message if event_types
+            resolved to no event types (e.g. empty or all-whitespace/commas);
+            every other key is still present, with an empty/zero result in
+            that case (no data was fetched).
         ip_address: Echoes the input.
         site: Site name from KEYCLOAK_SITES_INI, or null if unmatched or
             unconfigured (see sites_configured to tell those apart).
@@ -748,19 +756,15 @@ def get_ip_activity(
         max_timeline: Cap on the number of most-recent timeline entries
             returned (default 200; <=0 means no timeline entries). Does not
             affect summary/users/clients.
-
-    Raises:
-        ValueError: If event_types resolves to no event types (e.g. empty
-            or all-whitespace/commas).
     """
     resolved_date_from = _default_date_from(date_from)
     types = [t.strip() for t in event_types.split(",") if t.strip()]
-    if not types:
-        raise ValueError(f"event_types must contain at least one event type, got {event_types!r}")
+    error = None if types else f"event_types must contain at least one event type, got {event_types!r}"
 
     all_events: list[dict] = []
-    for et in types:
-        all_events.extend(_kc().get_events_all(et, date_from=resolved_date_from, date_to=date_to or None))
+    if error is None:
+        for et in types:
+            all_events.extend(_kc().get_events_all(et, date_from=resolved_date_from, date_to=date_to or None))
 
     target_ip = _normalize_ip(ip_address)
     matched = [e for e in all_events if _normalize_ip(e.get("ipAddress", "")) == target_ip]
@@ -819,6 +823,7 @@ def get_ip_activity(
 
     sc = _site_classifier()
     return {
+        "error": error,
         "ip_address": ip_address,
         "site": sc.classify(ip_address),
         "sites_configured": sc.available,
