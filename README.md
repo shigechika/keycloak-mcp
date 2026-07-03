@@ -43,6 +43,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | `get_brute_force_status` | Whether a user is currently locked by brute-force detection |
 | `get_realm_security_defenses` | Realm-level security policy: whether brute-force detection is enabled and its thresholds, the password policy, and browser security headers |
 | `get_login_failures_by_ip` | Failure breakdown by source IP (site-labeled when `KEYCLOAK_SITES_INI` is set) |
+| `get_ip_activity` | Exhaustive investigation of one source IP: success/failure counts, affected users/clients, timeline. Returns structured JSON. |
 | `detect_login_loops` | Flag users who logged in too many times in a short window (redirect loops) |
 
 ### Events
