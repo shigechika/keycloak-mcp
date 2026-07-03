@@ -27,6 +27,15 @@ def _format_ts(epoch_ms: int | str) -> str:
         return str(epoch_ms)
 
 
+def _format_iso(epoch_ms: int | str) -> str:
+    """Convert epoch milliseconds to a local ISO 8601 datetime string with offset."""
+    try:
+        ts = int(epoch_ms) / 1000
+        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat()
+    except (ValueError, TypeError):
+        return str(epoch_ms)
+
+
 def _default_date_from(date_from: str) -> str | None:
     """Return date_from if given; otherwise compute a default lookback window.
 
@@ -657,6 +666,141 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
         site = _site_classifier().classify(ip) or "external"
         lines.append(f"  {count:6d}  {ip:<40s}  {site:<16s}  {_format_ts(last)}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def get_ip_activity(
+    ip_address: str,
+    event_types: str = "LOGIN,LOGIN_ERROR",
+    date_from: str = "",
+    date_to: str = "",
+    max_timeline: int = 200,
+) -> dict:
+    """Exhaustive investigation of all activity from one source IP address.
+
+    Unlike `get_events(ip_address=...)`, which filters a single page and can
+    miss activity outside the most recent `max_results` events, this tool
+    fully paginates every requested event type (via `get_events_all`) before
+    filtering by IP, so the result is exhaustive over the requested date
+    range. Use this for brute-force / credential-stuffing / shared-workstation
+    investigations where `get_login_failures_by_ip` told you *which* IP to
+    look at and you now need the full picture for that one IP.
+
+    Returns a fixed-shape dict (JSON), not formatted text — every key below is
+    always present, even when zero events match.
+
+    Returns:
+        ip_address: Echoes the input.
+        site: Site name from KEYCLOAK_SITES_INI, or null if unmatched or
+            unconfigured (see sites_configured to tell those apart).
+        sites_configured: True if KEYCLOAK_SITES_INI was loaded at all.
+        date_from / date_to: The resolved date range actually scanned.
+        event_types: The event types scanned (echoes the input, split).
+        summary: total_events, login_success, login_failure, unique_users,
+            unique_clients, first_seen/last_seen (ISO 8601, null if no match).
+            Always computed over the FULL matched set, unaffected by
+            max_timeline truncation.
+        users: Per-user breakdown (success/failure counts, distinct error
+            codes), sorted by total activity descending. Note: successful
+            LOGIN events often carry only a userId (UUID) while LOGIN_ERROR
+            carries details.username — this tool keys on
+            username-or-userId-or-"unknown", so the same human can
+            legitimately appear under two different keys across success vs.
+            failure events.
+        clients: Per-client (SP) breakdown, same shape, sorted descending.
+        timeline: Chronological event list, capped at max_timeline (most
+            recent kept on overflow — see truncated).
+        truncated: True if timeline was capped; summary/users/clients are
+            never affected by this cap.
+
+    Args:
+        ip_address: Source IP to investigate (exact match against KeyCloak's
+            recorded ipAddress field).
+        event_types: Comma-separated KeyCloak event types to scan (default
+            "LOGIN,LOGIN_ERROR"). Widen with e.g.
+            "LOGIN,LOGIN_ERROR,LOGOUT,UPDATE_PASSWORD,CLIENT_LOGIN,CLIENT_LOGIN_ERROR"
+            for a broader sweep.
+        date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted
+            (KEYCLOAK_DEFAULT_DATE_FROM_HOURS). Widening the window means
+            fully paginating every event type over that window before
+            filtering — expect it to be slower on large realms.
+        date_to: End date (YYYY-MM-DD). Empty for open-ended.
+        max_timeline: Cap on the number of most-recent timeline entries
+            returned (default 200). Does not affect summary/users/clients.
+    """
+    resolved_date_from = _default_date_from(date_from)
+    types = [t.strip() for t in event_types.split(",") if t.strip()]
+
+    all_events: list[dict] = []
+    for et in types:
+        all_events.extend(_kc().get_events_all(et, date_from=resolved_date_from, date_to=date_to or None))
+
+    matched = [e for e in all_events if e.get("ipAddress") == ip_address]
+    matched.sort(key=lambda e: e.get("time", 0))
+
+    def _user_key(e: dict) -> str:
+        return e.get("details", {}).get("username") or e.get("userId") or "unknown"
+
+    users: dict[str, dict] = {}
+    clients: dict[str, dict] = {}
+    login_success = login_failure = 0
+
+    for e in matched:
+        is_failure = e["type"].endswith("_ERROR")
+        if e["type"] == "LOGIN":
+            login_success += 1
+        elif e["type"] == "LOGIN_ERROR":
+            login_failure += 1
+
+        uname = _user_key(e)
+        u = users.setdefault(uname, {"username": uname, "success": 0, "failure": 0, "errors": []})
+        cid = e.get("clientId", "unknown")
+        c = clients.setdefault(cid, {"client_id": cid, "success": 0, "failure": 0})
+        if is_failure:
+            u["failure"] += 1
+            c["failure"] += 1
+            err = e.get("error")
+            if err and err not in u["errors"]:
+                u["errors"].append(err)
+        else:
+            u["success"] += 1
+            c["success"] += 1
+
+    truncated = len(matched) > max_timeline
+    timeline_src = matched[-max_timeline:] if truncated else matched
+    timeline = [
+        {
+            "time": _format_iso(e.get("time", 0)),
+            "type": e["type"],
+            "username": _user_key(e),
+            "client_id": e.get("clientId", ""),
+            "error": e.get("error") or None,
+        }
+        for e in timeline_src
+    ]
+
+    sc = _site_classifier()
+    return {
+        "ip_address": ip_address,
+        "site": sc.classify(ip_address),
+        "sites_configured": sc.available,
+        "date_from": resolved_date_from,
+        "date_to": date_to or None,
+        "event_types": types,
+        "summary": {
+            "total_events": len(matched),
+            "login_success": login_success,
+            "login_failure": login_failure,
+            "unique_users": len(users),
+            "unique_clients": len(clients),
+            "first_seen": _format_iso(matched[0]["time"]) if matched else None,
+            "last_seen": _format_iso(matched[-1]["time"]) if matched else None,
+        },
+        "users": sorted(users.values(), key=lambda u: u["success"] + u["failure"], reverse=True),
+        "clients": sorted(clients.values(), key=lambda c: c["success"] + c["failure"], reverse=True),
+        "timeline": timeline,
+        "truncated": truncated,
+    }
 
 
 @mcp.tool()
