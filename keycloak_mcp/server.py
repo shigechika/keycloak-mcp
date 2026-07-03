@@ -764,13 +764,17 @@ def get_ip_activity(
 
     target_ip = _normalize_ip(ip_address)
     matched = [e for e in all_events if _normalize_ip(e.get("ipAddress", "")) == target_ip]
-    matched.sort(key=lambda e: e.get("time", 0))
+
+    def _time_key(e: dict) -> int:
+        return e.get("time") or 0
 
     def _user_key(e: dict) -> str:
         return (e.get("details") or {}).get("username") or e.get("userId") or "unknown"
 
     def _client_key(e: dict) -> str:
         return e.get("clientId") or "unknown"
+
+    matched.sort(key=_time_key)
 
     users: dict[str, dict] = {}
     clients: dict[str, dict] = {}
@@ -804,7 +808,7 @@ def get_ip_activity(
     truncated = len(matched) > len(timeline_src)
     timeline = [
         {
-            "time": _format_iso(e.get("time", 0)),
+            "time": _format_iso(_time_key(e)),
             "type": e.get("type", ""),
             "username": _user_key(e),
             "client_id": _client_key(e),
@@ -827,8 +831,8 @@ def get_ip_activity(
             "login_failure": login_failure,
             "unique_users": len(users),
             "unique_clients": len(clients),
-            "first_seen": _format_iso(matched[0].get("time", 0)) if matched else None,
-            "last_seen": _format_iso(matched[-1].get("time", 0)) if matched else None,
+            "first_seen": _format_iso(_time_key(matched[0])) if matched else None,
+            "last_seen": _format_iso(_time_key(matched[-1])) if matched else None,
         },
         "users": sorted(users.values(), key=lambda u: u["success"] + u["failure"], reverse=True),
         "clients": sorted(clients.values(), key=lambda c: c["success"] + c["failure"], reverse=True),

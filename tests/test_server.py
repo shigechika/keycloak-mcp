@@ -759,6 +759,25 @@ class TestGetIpActivity:
         assert result["timeline"][0]["client_id"] == "unknown"
 
     @patch.object(server, "_kc")
+    def test_null_time_does_not_crash_sort_or_summary(self, mock):
+        login_events = [
+            {
+                "type": "LOGIN",
+                "ipAddress": "10.0.0.1",
+                "time": None,
+                "details": {"username": "alice"},
+                "clientId": "app",
+            },
+            {"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 2000, "details": {"username": "bob"}, "clientId": "app"},
+        ]
+        mock.return_value.get_events_all.side_effect = [login_events, []]
+        result = server.get_ip_activity("10.0.0.1")
+
+        assert result["summary"]["total_events"] == 2
+        assert result["summary"]["first_seen"] is not None
+        assert result["summary"]["last_seen"] is not None
+
+    @patch.object(server, "_kc")
     def test_ip_normalization_matches_equivalent_ipv6_forms(self, mock):
         login_events = [
             {
