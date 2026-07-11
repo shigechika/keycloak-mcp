@@ -5,6 +5,7 @@ Infinispan-safe: does not create user sessions or use userinfo endpoint.
 """
 
 import ipaddress
+import math
 import os
 import secrets
 import string
@@ -89,6 +90,8 @@ def _deadline_seconds() -> float | None:
     try:
         secs = float(os.environ.get("KEYCLOAK_DEADLINE", str(_DEADLINE_DEFAULT)))
     except ValueError:
+        secs = _DEADLINE_DEFAULT
+    if not math.isfinite(secs):  # "nan"/"inf" parse fine but would silently disable the deadline
         secs = _DEADLINE_DEFAULT
     return secs if secs > 0 else None
 
@@ -489,7 +492,8 @@ def get_totp_users(
     deadline = deadline_after(_deadline_seconds())
     users, enum_trunc = _kc().list_users_all(enabled_only=enabled_only, limit=limit, deadline=deadline)
     if not users:
-        return "No users found"
+        note = " (enumeration cut short by the time/user limit; realm may contain more)" if enum_trunc else ""
+        return f"No users found{note}"
 
     otp_users: list[str] = []
     errors = 0
@@ -516,7 +520,13 @@ def get_totp_users(
     scope = "enabled users" if enabled_only else "users"
     header = f"TOTP (OTP) usage (scanned {scanned} {scope}"
     if capped:
-        header += "; capped by the time/user limit (KEYCLOAK_DEADLINE / KEYCLOAK_MAX_USERS); realm may contain more"
+        if loop_trunc:
+            reason = "the time budget (KEYCLOAK_DEADLINE)"
+        elif max_users > 0:
+            reason = f"max_users={max_users}"
+        else:
+            reason = "KEYCLOAK_MAX_USERS"
+        header += f"; capped by {reason}, realm may contain more"
     header += "):"
     lines = [
         header,
@@ -763,7 +773,7 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
         deadline=deadline_after(_deadline_seconds()),
     )
     if not failure:
-        return "No login failures found"
+        return _with_warning("No login failures found", truncated)
 
     # Group by normalized IP so equivalent notations (e.g. IPv6 "::1" vs
     # "0:0:0:0:0:0:0:1") aren't fragmented into separate rows.

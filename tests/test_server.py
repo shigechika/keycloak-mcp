@@ -236,7 +236,7 @@ class TestGetTotpUsers:
         mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
         result = server.get_totp_users(max_users=2)
         mock.return_value.list_users_all.assert_called_once_with(enabled_only=True, limit=2, deadline=ANY)
-        assert "capped by the time/user limit" in result
+        assert "capped by max_users=2" in result  # explicit arg reported precisely, not the env vars
         assert mock.return_value.get_user_credentials.call_count == 2
 
     @patch.object(server, "_kc")
@@ -1450,6 +1450,13 @@ class TestBoundsEnvParsing:
         monkeypatch.setenv("KEYCLOAK_DEADLINE", "foo")
         assert server._deadline_seconds() == 45.0
 
+    def test_deadline_non_finite_falls_back_not_disabled(self, monkeypatch):
+        # "nan"/"inf" parse as floats but must NOT silently disable the deadline.
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "nan")
+        assert server._deadline_seconds() == 45.0
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "inf")
+        assert server._deadline_seconds() == 45.0
+
     def test_max_events(self, monkeypatch):
         monkeypatch.delenv("KEYCLOAK_MAX_EVENTS", raising=False)
         assert server._max_events() == 200000
@@ -1528,6 +1535,31 @@ class TestPartialDisclosure:
 
         monkeypatch.setattr("keycloak_mcp.server.past_deadline", fake_past)
         result = server.get_totp_users()
-        assert "capped by the time/user limit" in result
+        assert "capped by the time budget (KEYCLOAK_DEADLINE)" in result
         assert "scanned 2 enabled users" in result  # stopped after 2 of 5
         assert mock.return_value.get_user_credentials.call_count == 2
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_by_hour_warns_when_truncated(self, mock):
+        mock.return_value = ([{"type": "LOGIN", "time": 1700035200000}], [], True)
+        assert server.get_login_stats_by_hour().startswith("⚠️ PARTIAL RESULT")
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_by_client_warns_when_truncated(self, mock):
+        mock.return_value = ([{"clientId": "x"}], [], True)
+        assert server.get_login_stats_by_client().startswith("⚠️ PARTIAL RESULT")
+
+    @patch.object(server, "_kc")
+    def test_daily_brief_discloses_partial(self, mock):
+        # A pagination that blew the deadline/cap must flip the brief to WARNING with a
+        # [PARTIAL] note — the flagship tool must not under-report events silently.
+        mock.return_value.get_events_all.side_effect = [
+            _ev([{"type": "LOGIN", "time": 1, "ipAddress": "1.1.1.1"}], truncated=True),  # LOGIN
+            _ev([]),  # LOGIN_ERROR
+            _ev([]),  # UPDATE_PASSWORD
+        ]
+        mock.return_value.get_admin_events_all.return_value = _ev([])
+        mock.return_value.get_session_stats.return_value = [{"clientId": "x", "active": "1"}]
+        result = server.daily_brief()
+        assert "## WARNING" in result
+        assert "[PARTIAL]" in result

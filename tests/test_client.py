@@ -255,6 +255,18 @@ class TestGetEventsAll:
         assert truncated is True
         assert route.call_count == 1  # did not fetch the next page
 
+    def test_short_final_page_hitting_cap_exactly_is_not_truncated(self, mock_api):
+        # A short final page that reaches exactly max_events means the endpoint is
+        # drained — an exact-fit complete result, not a partial. Must report truncated=False.
+        page1 = [{"type": "LOGIN", "time": i} for i in range(3)]  # full page
+        page2 = [{"type": "LOGIN", "time": 99}]  # short page -> drained; total 4 == max_events
+        mock_api.get(f"{ADMIN_BASE}/events").mock(
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)]
+        )
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3, max_events=4)
+        assert len(result) == 4
+        assert truncated is False
+
     def test_deadline_stops_paging_between_pages(self, mock_api, monkeypatch):
         # Full pages would page forever; a deadline already in the past on the 2nd
         # loop iteration must stop paging and report a disclosed partial.

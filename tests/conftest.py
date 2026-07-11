@@ -16,6 +16,14 @@ TOKEN_ENDPOINT = "https://sso.example.com/realms/test-realm/protocol/openid-conn
 ADMIN_BASE = "https://sso.example.com/admin/realms/test-realm"
 
 
+@pytest.fixture(autouse=True)
+def _clear_bounds_env(monkeypatch):
+    """Clear the pagination-bound env vars so an ambient value in the shell can't make the
+    tests that read them fresh (deadline/cap defaults, the real past_deadline loop) flaky."""
+    for var in ("KEYCLOAK_DEADLINE", "KEYCLOAK_MAX_EVENTS", "KEYCLOAK_MAX_USERS"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture()
 def mock_api():
     """Provide a respx mock router with token endpoint pre-configured."""
