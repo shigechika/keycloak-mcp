@@ -14,6 +14,23 @@ _MAX_ATTEMPTS = 5
 _BACKOFF_BASE = 0.5
 
 
+def deadline_after(seconds: float | None) -> float | None:
+    """Absolute ``time.monotonic()`` deadline ``seconds`` from now, or ``None`` to disable.
+
+    Centralizing the clock here lets one tool call compute a single wall-clock budget and
+    share it across several paginations, and lets tests stub ``keycloak_mcp.client.time.monotonic``
+    in exactly one place. A non-positive ``seconds`` returns ``None`` (deadline disabled).
+    """
+    if not seconds or seconds <= 0:
+        return None
+    return time.monotonic() + seconds
+
+
+def past_deadline(deadline: float | None) -> bool:
+    """True once ``deadline`` (an absolute monotonic timestamp) has passed; False if ``None``."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
 class KeyCloakClient:
     """Thin wrapper around the KeyCloak Admin REST API."""
 
@@ -71,7 +88,14 @@ class KeyCloakClient:
         """DELETE request to Admin API. Returns status code."""
         return self._send("DELETE", path).status_code
 
-    def _paginate(self, path: str, params: dict, page_size: int, max_total: int | None = None) -> list[dict]:
+    def _paginate(
+        self,
+        path: str,
+        params: dict,
+        page_size: int,
+        max_total: int | None = None,
+        deadline: float | None = None,
+    ) -> tuple[list[dict], bool]:
         """Page through a GET list endpoint until a short page arrives.
 
         Assumes the endpoint returns a bare JSON array of items, which is the
@@ -83,19 +107,28 @@ class KeyCloakClient:
         copy and leaves the caller's dict untouched.
 
         :param max_total: Stop once this many items are collected and return at
-            most that many. ``None`` (default) pages through everything.
+            most that many. ``None`` (default) does not cap on count.
+        :param deadline: An absolute ``time.monotonic()`` timestamp (or ``None``).
+            Checked between pages, so a wide date window can't page unbounded and
+            keep hammering the server after the caller's tool-call gateway has
+            already timed out — the caller gets a disclosed partial instead.
+        :returns: ``(items, truncated)``. ``truncated`` is True when paging
+            stopped early on ``max_total`` or ``deadline`` (more items likely
+            exist); False when the endpoint was fully drained (a short page).
         """
         params = dict(params)
         params["max"] = page_size
         params["first"] = 0
         all_items: list[dict] = []
         while True:
+            if past_deadline(deadline):
+                return all_items, True
             page = self._get(path, params)
             all_items.extend(page)
             if max_total is not None and len(all_items) >= max_total:
-                return all_items[:max_total]
+                return all_items[:max_total], True
             if len(page) < page_size:
-                return all_items
+                return all_items, False
             params["first"] += page_size
 
     # --- Users ---
@@ -108,7 +141,13 @@ class KeyCloakClient:
         """Search users by username, email, or name."""
         return self._get("/users", {"search": query, "max": max_results})
 
-    def list_users_all(self, enabled_only: bool = False, page_size: int = 100, limit: int | None = None) -> list[dict]:
+    def list_users_all(
+        self,
+        enabled_only: bool = False,
+        page_size: int = 100,
+        limit: int | None = None,
+        deadline: float | None = None,
+    ) -> tuple[list[dict], bool]:
         """List every user in the realm with automatic pagination.
 
         :param enabled_only: When True, ask KeyCloak to return only enabled users.
@@ -116,11 +155,15 @@ class KeyCloakClient:
         :param limit: Stop after collecting this many users (``None`` = all). The
             enumeration itself short-circuits, so a small limit does not page
             through the whole realm.
+        :param deadline: Absolute ``time.monotonic()`` deadline (or ``None``); see
+            :meth:`_paginate`.
+        :returns: ``(users, truncated)`` — ``truncated`` True if capped by ``limit``
+            or ``deadline`` before the realm was fully enumerated.
         """
         params: dict[str, Any] = {}
         if enabled_only:
             params["enabled"] = "true"
-        return self._paginate("/users", params, page_size, max_total=limit)
+        return self._paginate("/users", params, page_size, max_total=limit, deadline=deadline)
 
     def get_user_credentials(self, user_id: str) -> list[dict]:
         """Get a user's configured credentials (password, otp, webauthn, …).
@@ -181,7 +224,7 @@ class KeyCloakClient:
 
     def get_group_children_all(self, group_id: str, page_size: int = 100) -> list[dict]:
         """Get all child (sub-)groups of a group with automatic pagination."""
-        return self._paginate(f"/groups/{group_id}/children", {}, page_size)
+        return self._paginate(f"/groups/{group_id}/children", {}, page_size)[0]
 
     def get_group_members(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
         """Get members of a group (single page)."""
@@ -189,7 +232,7 @@ class KeyCloakClient:
 
     def get_group_members_all(self, group_id: str, page_size: int = 100) -> list[dict]:
         """Get all members of a group with automatic pagination."""
-        return self._paginate(f"/groups/{group_id}/members", {}, page_size)
+        return self._paginate(f"/groups/{group_id}/members", {}, page_size)[0]
 
     # --- Events ---
 
@@ -223,8 +266,19 @@ class KeyCloakClient:
         date_from: str | None = None,
         date_to: str | None = None,
         page_size: int = 1000,
-    ) -> list[dict]:
-        """Get all events with automatic pagination."""
+        max_events: int | None = None,
+        deadline: float | None = None,
+    ) -> tuple[list[dict], bool]:
+        """Get all events with automatic pagination.
+
+        :param max_events: Cap on events collected (``None`` = no count cap); also
+            bounds how deep the offset (``first``) grows, since KeyCloak's offset
+            pagination degrades badly at high offsets.
+        :param deadline: Absolute ``time.monotonic()`` deadline (or ``None``); see
+            :meth:`_paginate`.
+        :returns: ``(events, truncated)`` — ``truncated`` True if the window was too
+            wide and paging stopped on ``max_events``/``deadline``.
+        """
         params: dict[str, Any] = {}
         if event_type:
             params["type"] = event_type
@@ -234,7 +288,7 @@ class KeyCloakClient:
             params["dateFrom"] = date_from
         if date_to:
             params["dateTo"] = date_to
-        return self._paginate("/events", params, page_size)
+        return self._paginate("/events", params, page_size, max_total=max_events, deadline=deadline)
 
     # --- Admin Events ---
 
@@ -289,8 +343,16 @@ class KeyCloakClient:
         date_from: str | None = None,
         date_to: str | None = None,
         page_size: int = 1000,
-    ) -> list[dict]:
-        """Get all admin events with automatic pagination."""
+        max_events: int | None = None,
+        deadline: float | None = None,
+    ) -> tuple[list[dict], bool]:
+        """Get all admin events with automatic pagination.
+
+        :param max_events: Cap on events collected (``None`` = no count cap).
+        :param deadline: Absolute ``time.monotonic()`` deadline (or ``None``); see
+            :meth:`_paginate`.
+        :returns: ``(events, truncated)`` — see :meth:`get_events_all`.
+        """
         params: dict[str, Any] = {}
         if operation_types:
             params["operationTypes"] = operation_types
@@ -302,7 +364,7 @@ class KeyCloakClient:
             params["dateFrom"] = date_from
         if date_to:
             params["dateTo"] = date_to
-        return self._paginate("/admin-events", params, page_size)
+        return self._paginate("/admin-events", params, page_size, max_total=max_events, deadline=deadline)
 
     # --- Sessions ---
 

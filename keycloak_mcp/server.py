@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 
-from .client import KeyCloakClient
+from .client import KeyCloakClient, deadline_after, past_deadline
 from .sites import SiteClassifier
 
 
@@ -64,6 +64,63 @@ def _default_date_from(date_from: str) -> str | None:
     if hours <= 0:
         return None
     return (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d")
+
+
+# Bounds for heavy read tools so a wide date window / big realm can't page unbounded, blow the
+# ~60s tool-call gateway, and keep hammering KeyCloak after the caller has given up. All read
+# fresh from the env (0/negative disables), matching _default_date_from's idiom.
+_DEADLINE_DEFAULT = 45.0
+_MAX_EVENTS_DEFAULT = 200000
+_MAX_USERS_DEFAULT = 5000
+
+# Prepended to a tool's output when its data was cut short by the deadline or a cap, so a
+# partial result is never silently mistaken for the whole picture.
+_PARTIAL_WARNING = (
+    "⚠️ PARTIAL RESULT — stopped early (window too wide / realm too large): the data below "
+    "is INCOMPLETE. Narrow date_from (or set a smaller window) for full coverage."
+)
+
+
+def _deadline_seconds() -> float | None:
+    """Per-call wall-clock budget (seconds) for heavy paginating/fan-out tools.
+
+    From KEYCLOAK_DEADLINE (default 45); 0 or negative disables the deadline.
+    """
+    try:
+        secs = float(os.environ.get("KEYCLOAK_DEADLINE", str(_DEADLINE_DEFAULT)))
+    except ValueError:
+        secs = _DEADLINE_DEFAULT
+    return secs if secs > 0 else None
+
+
+def _max_events() -> int | None:
+    """Per-pagination cap on events fetched, from KEYCLOAK_MAX_EVENTS (default 200000).
+
+    0 or negative disables the count cap (rely on the deadline alone).
+    """
+    try:
+        cap = int(os.environ.get("KEYCLOAK_MAX_EVENTS", str(_MAX_EVENTS_DEFAULT)))
+    except ValueError:
+        cap = _MAX_EVENTS_DEFAULT
+    return cap if cap > 0 else None
+
+
+def _max_users() -> int | None:
+    """Default cap on users enumerated by get_totp_users, from KEYCLOAK_MAX_USERS (default 5000).
+
+    Used only when the tool's ``max_users`` argument is 0. 0 or negative disables the default
+    cap (scan the whole realm, bounded only by the deadline).
+    """
+    try:
+        cap = int(os.environ.get("KEYCLOAK_MAX_USERS", str(_MAX_USERS_DEFAULT)))
+    except ValueError:
+        cap = _MAX_USERS_DEFAULT
+    return cap if cap > 0 else None
+
+
+def _with_warning(text: str, truncated: bool) -> str:
+    """Prepend the partial-result warning to a tool's text output when it was cut short."""
+    return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
 
 
 mcp = FastMCP("keycloak-mcp")
@@ -418,17 +475,31 @@ def get_totp_users(
     Args:
         enabled_only: Only scan enabled users (default True).
         list_users: Include the list of usernames with TOTP (default True).
-        max_users: Cap the number of users scanned (0 = all). When the cap is
-                   hit the percentage covers only the sample, not the realm.
+        max_users: Cap the number of users scanned. ``0`` (default) falls back to
+                   KEYCLOAK_MAX_USERS (default 5000) rather than the whole realm.
+                   The N+1 credential loop is also bounded by KEYCLOAK_DEADLINE, so
+                   a large realm returns a disclosed sample. When capped, the
+                   percentage covers only the sample, not the realm.
     """
-    limit = max_users if max_users > 0 else None
-    users = _kc().list_users_all(enabled_only=enabled_only, limit=limit)
+    # Explicit max_users wins; otherwise fall back to the KEYCLOAK_MAX_USERS default so a
+    # bare call can't try to enumerate the whole realm. The deadline additionally bounds the
+    # N+1 credential loop — the real time sink — so a big realm returns a disclosed sample
+    # instead of running past the tool-call gateway and hammering KeyCloak after it gives up.
+    limit = max_users if max_users > 0 else _max_users()
+    deadline = deadline_after(_deadline_seconds())
+    users, enum_trunc = _kc().list_users_all(enabled_only=enabled_only, limit=limit, deadline=deadline)
     if not users:
         return "No users found"
 
     otp_users: list[str] = []
     errors = 0
+    scanned = 0
+    loop_trunc = False
     for u in users:
+        if past_deadline(deadline):
+            loop_trunc = True
+            break
+        scanned += 1
         try:
             creds = _kc().get_user_credentials(u["id"])
         except Exception as exc:  # noqa: BLE001 — skip the user, keep scanning
@@ -438,15 +509,14 @@ def get_totp_users(
         if any(c.get("type") == _OTP_TYPE for c in creds):
             otp_users.append(u.get("username", u["id"]))
 
-    scanned = len(users)
-    capped = limit is not None and scanned >= limit
+    capped = enum_trunc or loop_trunc
     succeeded = scanned - errors
     with_otp = len(otp_users)
     pct = (with_otp / succeeded * 100) if succeeded else 0.0
     scope = "enabled users" if enabled_only else "users"
     header = f"TOTP (OTP) usage (scanned {scanned} {scope}"
     if capped:
-        header += f"; capped at max_users={max_users}, realm may contain more"
+        header += "; capped by the time/user limit (KEYCLOAK_DEADLINE / KEYCLOAK_MAX_USERS); realm may contain more"
     header += "):"
     lines = [
         header,
@@ -586,11 +656,31 @@ def get_events(
     return _format_event_list(f"Events ({len(events)}):", events, _format_user_event)
 
 
-def _fetch_login_events(date_from: str = "", date_to: str = "") -> tuple[list[dict], list[dict]]:
-    """Fetch all LOGIN and LOGIN_ERROR events with pagination."""
-    success = _kc().get_events_all("LOGIN", date_from=_default_date_from(date_from), date_to=date_to or None)
-    failure = _kc().get_events_all("LOGIN_ERROR", date_from=_default_date_from(date_from), date_to=date_to or None)
-    return success, failure
+def _fetch_login_events(
+    date_from: str = "", date_to: str = "", deadline: float | None = None
+) -> tuple[list[dict], list[dict], bool]:
+    """Fetch all LOGIN and LOGIN_ERROR events with bounded pagination.
+
+    A single wall-clock ``deadline`` (computed here from KEYCLOAK_DEADLINE when not
+    supplied) and the KEYCLOAK_MAX_EVENTS cap are SHARED across both paginations, so the
+    pair together stays under the tool-call gateway timeout. When a caller (e.g.
+    ``daily_brief``) already runs several paginations, it passes its own shared ``deadline``.
+
+    Returns ``(success, failure, truncated)`` — ``truncated`` True if either pagination was
+    cut short (results incomplete).
+    """
+    if deadline is None:
+        deadline = deadline_after(_deadline_seconds())
+    cap = _max_events()
+    resolved_from = _default_date_from(date_from)
+    resolved_to = date_to or None
+    success, s_trunc = _kc().get_events_all(
+        "LOGIN", date_from=resolved_from, date_to=resolved_to, max_events=cap, deadline=deadline
+    )
+    failure, f_trunc = _kc().get_events_all(
+        "LOGIN_ERROR", date_from=resolved_from, date_to=resolved_to, max_events=cap, deadline=deadline
+    )
+    return success, failure, s_trunc or f_trunc
 
 
 @mcp.tool()
@@ -601,7 +691,7 @@ def get_login_stats(date_from: str = "", date_to: str = "") -> str:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
-    success, failure = _fetch_login_events(date_from, date_to)
+    success, failure, truncated = _fetch_login_events(date_from, date_to)
 
     lines = [
         "Login statistics:",
@@ -616,7 +706,7 @@ def get_login_stats(date_from: str = "", date_to: str = "") -> str:
         for user, count in fail_users.most_common(10):
             lines.append(f"  {count:5d}  {user}")
 
-    return "\n".join(lines)
+    return _with_warning("\n".join(lines), truncated)
 
 
 @mcp.tool()
@@ -627,7 +717,7 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
-    success, failure = _fetch_login_events(date_from, date_to)
+    success, failure, truncated = _fetch_login_events(date_from, date_to)
 
     success_by_hour: Counter[int] = Counter()
     failure_by_hour: Counter[int] = Counter()
@@ -653,7 +743,7 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
     total_s = sum(success_by_hour.values())
     total_f = sum(failure_by_hour.values())
     lines.append(f"  Total  {total_s:8d}  {total_f:8d}  {total_s + total_f:8d}")
-    return "\n".join(lines)
+    return _with_warning("\n".join(lines), truncated)
 
 
 @mcp.tool()
@@ -665,7 +755,13 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
         date_to: End date (YYYY-MM-DD). Empty for all.
         top: Number of top IPs to show (default 20).
     """
-    failure = _kc().get_events_all("LOGIN_ERROR", date_from=_default_date_from(date_from), date_to=date_to or None)
+    failure, truncated = _kc().get_events_all(
+        "LOGIN_ERROR",
+        date_from=_default_date_from(date_from),
+        date_to=date_to or None,
+        max_events=_max_events(),
+        deadline=deadline_after(_deadline_seconds()),
+    )
     if not failure:
         return "No login failures found"
 
@@ -681,7 +777,7 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
         )
         site = _site_classifier().classify(ip) or "external"
         lines.append(f"  {count:6d}  {ip:<40s}  {site:<16s}  {_format_ts(last)}")
-    return "\n".join(lines)
+    return _with_warning("\n".join(lines), truncated)
 
 
 @mcp.tool()
@@ -737,6 +833,12 @@ def get_ip_activity(
             an empty timeline.
         truncated: True if timeline was capped; summary/users/clients are
             never affected by this cap.
+        events_capped: True if event pagination itself was cut short by the
+            wall-clock deadline (KEYCLOAK_DEADLINE) or the per-type cap
+            (KEYCLOAK_MAX_EVENTS) — i.e. the window was too wide and the WHOLE
+            result (summary/users/clients/timeline) is incomplete. Distinct from
+            ``truncated``, which only trims the timeline of an otherwise-complete
+            scan. Narrow date_from when this is true.
 
     Args:
         ip_address: Source IP to investigate. Compared against KeyCloak's
@@ -762,9 +864,18 @@ def get_ip_activity(
     error = None if types else f"event_types must contain at least one event type, got {event_types!r}"
 
     all_events: list[dict] = []
+    events_capped = False
     if error is None:
+        # One deadline + cap SHARED across every event type's pagination, so widening
+        # event_types or the window can't page unbounded past the tool-call timeout.
+        deadline = deadline_after(_deadline_seconds())
+        cap = _max_events()
         for et in types:
-            all_events.extend(_kc().get_events_all(et, date_from=resolved_date_from, date_to=date_to or None))
+            ev, trunc = _kc().get_events_all(
+                et, date_from=resolved_date_from, date_to=date_to or None, max_events=cap, deadline=deadline
+            )
+            all_events.extend(ev)
+            events_capped = events_capped or trunc
 
     target_ip = _normalize_ip(ip_address)
     matched = [e for e in all_events if _normalize_ip(e.get("ipAddress", "")) == target_ip]
@@ -843,6 +954,7 @@ def get_ip_activity(
         "clients": sorted(clients.values(), key=lambda c: c["success"] + c["failure"], reverse=True),
         "timeline": timeline,
         "truncated": truncated,
+        "events_capped": events_capped,
     }
 
 
@@ -854,7 +966,7 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
         date_to: End date (YYYY-MM-DD). Empty for all.
     """
-    success, failure = _fetch_login_events(date_from, date_to)
+    success, failure, truncated = _fetch_login_events(date_from, date_to)
 
     success_by_client: Counter[str] = Counter(e.get("clientId", "unknown") for e in success)
     failure_by_client: Counter[str] = Counter(e.get("clientId", "unknown") for e in failure)
@@ -867,7 +979,7 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
     total_s = sum(success_by_client.values())
     total_f = sum(failure_by_client.values())
     lines.append(f"  {'Total':<48s}  {total_s:8d}  {total_f:8d}  {total_s + total_f:8d}")
-    return "\n".join(lines)
+    return _with_warning("\n".join(lines), truncated)
 
 
 @mcp.tool()
@@ -890,9 +1002,15 @@ def detect_login_loops(
         window_seconds: Time window in seconds (default 60).
         top: Number of top users to show (default 20). Use 0 for all.
     """
-    events = _kc().get_events_all("LOGIN", date_from=_default_date_from(date_from), date_to=date_to or None)
+    events, truncated = _kc().get_events_all(
+        "LOGIN",
+        date_from=_default_date_from(date_from),
+        date_to=date_to or None,
+        max_events=_max_events(),
+        deadline=deadline_after(_deadline_seconds()),
+    )
     if not events:
-        return "No LOGIN events found"
+        return _with_warning("No LOGIN events found", truncated)
 
     # Group events by username
     by_user: dict[str, list[dict]] = {}
@@ -941,7 +1059,7 @@ def detect_login_loops(
             )
 
     if not loops:
-        return f"No login loops detected (threshold={threshold}, window={window_seconds}s)"
+        return _with_warning(f"No login loops detected (threshold={threshold}, window={window_seconds}s)", truncated)
 
     loops.sort(key=lambda x: -x[1])
     total_loop_users = len(loops)
@@ -957,7 +1075,7 @@ def detect_login_loops(
         lines.append(
             f"  {username:<40s}  {count:5d}  {duration:8.1f}s  {avg_interval:10.2f}s  {_label_ip(ip):<40s}  {client}"
         )
-    return "\n".join(lines)
+    return _with_warning("\n".join(lines), truncated)
 
 
 @mcp.tool()
@@ -1261,22 +1379,36 @@ def daily_brief(
     now_str = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
     date_from = (datetime.now() - timedelta(hours=since_hours)).strftime("%Y-%m-%d")
 
+    # One deadline + cap SHARED across all four paginations so the whole brief stays under
+    # the tool-call gateway timeout (a truncated section just reports a lower bound).
+    deadline = deadline_after(_deadline_seconds())
+    cap = _max_events()
     try:
-        success, failure = _fetch_login_events(date_from=date_from)
-        pw_updates = _kc().get_events_all("UPDATE_PASSWORD", date_from=date_from)
-        admin_evts = _kc().get_admin_events_all(
+        success, failure, login_trunc = _fetch_login_events(date_from=date_from, deadline=deadline)
+        pw_updates, pw_trunc = _kc().get_events_all(
+            "UPDATE_PASSWORD", date_from=date_from, max_events=cap, deadline=deadline
+        )
+        admin_evts, admin_trunc = _kc().get_admin_events_all(
             operation_types=["CREATE", "UPDATE", "DELETE"],
             resource_types=["USER", "CLIENT"],
             date_from=date_from,
+            max_events=cap,
+            deadline=deadline,
         )
         session_stats = _kc().get_session_stats()
     except Exception as exc:
         print(f"daily_brief: {type(exc).__name__}: {exc}", file=sys.stderr)
         return f"## daily_brief — {now_str}\n## CRITICAL — {type(exc).__name__}"
+    truncated = login_trunc or pw_trunc or admin_trunc
 
     by_ip: Counter[str] = Counter(e.get("ipAddress", "unknown") for e in failure)
     top_offenders = [(ip, cnt) for ip, cnt in by_ip.most_common() if cnt >= ip_failure_threshold][:5]
     warnings: list[str] = [f"[LOGIN_FAILURE] {cnt} failures from {_label_ip(ip)}" for ip, cnt in top_offenders]
+    if truncated:
+        warnings.append(
+            "[PARTIAL] event data incomplete — the look-back window exceeded the time/size budget; "
+            "counts are a lower bound (narrow since_hours or raise KEYCLOAK_DEADLINE)"
+        )
 
     total_sessions = sum(int(s.get("active", 0)) for s in session_stats)
 

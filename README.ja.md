@@ -116,6 +116,9 @@ pip install -e .
 | `KEYCLOAK_CLIENT_SECRET` | クライアントシークレット | *必須* |
 | `KEYCLOAK_SITES_INI` | IP→拠点名ラベル用の INI ファイル（後述） | *未設定* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | `date_from` 省略時のイベント検索範囲（時間）。`0` で全履歴スキャン（イベント数が多いレルムではハングの原因になる）。 | `24` |
+| `KEYCLOAK_DEADLINE` | 重いイベント/TOTP 系ツール1回あたりの実時間バジェット（秒）。広い窓や大規模レルムで超過しそうなときは、クライアントの ~60秒ゲートウェイタイムアウトを超えて KeyCloak を叩き続ける代わりに、途中で打ち切って**部分結果（⚠️ 警告付き）**を返す。`0` で無効。 | `45` |
+| `KEYCLOAK_MAX_EVENTS` | イベント系ツールの1ページングあたりのイベント取得上限（激遅化する深いオフセットの深さも制限）。上限超過時は部分結果を開示。`0` で無効。 | `200000` |
+| `KEYCLOAK_MAX_USERS` | `get_totp_users` の `max_users` 引数が `0` のときの走査ユーザー数の既定上限（1ユーザーにつき credential 呼び出し1回）。`0` で無効（全レルム、`KEYCLOAK_DEADLINE` のみで制限）。 | `5000` |
 
 ### KeyCloak 側のクライアント設定
 

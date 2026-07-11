@@ -3,9 +3,27 @@
 import httpx
 import pytest
 
-from keycloak_mcp.client import KeyCloakClient
+import keycloak_mcp.client as client_mod
+from keycloak_mcp.client import KeyCloakClient, deadline_after, past_deadline
 
 from .conftest import ADMIN_BASE, SAMPLE_USER, SAMPLE_USER_2
+
+
+class TestDeadlineHelpers:
+    def test_deadline_after_disabled_when_non_positive(self):
+        assert deadline_after(None) is None
+        assert deadline_after(0) is None
+        assert deadline_after(-5) is None
+
+    def test_deadline_after_is_monotonic_plus_seconds(self, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: 100.0)
+        assert deadline_after(30.0) == 130.0
+
+    def test_past_deadline(self, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: 200.0)
+        assert past_deadline(None) is False  # disabled
+        assert past_deadline(199.0) is True  # already passed
+        assert past_deadline(201.0) is False  # still in the future
 
 
 class TestCountUsers:
@@ -25,8 +43,9 @@ class TestSearchUsers:
 class TestListUsersAll:
     def test_enabled_only_param(self, mock_api):
         route = mock_api.get(f"{ADMIN_BASE}/users").mock(return_value=httpx.Response(200, json=[SAMPLE_USER]))
-        result = KeyCloakClient().list_users_all(enabled_only=True, page_size=100)
+        result, truncated = KeyCloakClient().list_users_all(enabled_only=True, page_size=100)
         assert len(result) == 1
+        assert truncated is False
         assert "enabled=true" in str(route.calls[0].request.url)
 
     def test_pagination(self, mock_api):
@@ -38,8 +57,9 @@ class TestListUsersAll:
                 httpx.Response(200, json=page2),
             ]
         )
-        result = KeyCloakClient().list_users_all(page_size=3)
+        result, truncated = KeyCloakClient().list_users_all(page_size=3)
         assert len(result) == 4
+        assert truncated is False  # fully drained (short final page)
 
     def test_limit_short_circuits_enumeration(self, mock_api):
         # A full page would normally trigger another request; the limit must stop
@@ -47,8 +67,9 @@ class TestListUsersAll:
         route = mock_api.get(f"{ADMIN_BASE}/users").mock(
             return_value=httpx.Response(200, json=[{"id": str(i)} for i in range(3)])
         )
-        result = KeyCloakClient().list_users_all(page_size=3, limit=2)
+        result, truncated = KeyCloakClient().list_users_all(page_size=3, limit=2)
         assert len(result) == 2
+        assert truncated is True  # capped, so more likely exist
         assert route.call_count == 1
 
 
@@ -206,8 +227,9 @@ class TestGetEventsAll:
     def test_single_page(self, mock_api):
         events = [{"type": "LOGIN", "time": 1700000000000}]
         mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=events))
-        result = KeyCloakClient().get_events_all("LOGIN", page_size=1000)
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=1000)
         assert len(result) == 1
+        assert truncated is False
 
     def test_pagination(self, mock_api):
         page1 = [{"type": "LOGIN", "time": i} for i in range(3)]
@@ -218,8 +240,34 @@ class TestGetEventsAll:
                 httpx.Response(200, json=page2),
             ]
         )
-        result = KeyCloakClient().get_events_all("LOGIN", page_size=3)
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3)
         assert len(result) == 4
+        assert truncated is False
+
+    def test_max_events_caps_and_reports_truncated(self, mock_api):
+        # A full page would normally trigger another request; max_events must stop
+        # paging early, trim to the cap, and report truncated=True.
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(
+            return_value=httpx.Response(200, json=[{"type": "LOGIN", "time": i} for i in range(3)])
+        )
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3, max_events=2)
+        assert len(result) == 2
+        assert truncated is True
+        assert route.call_count == 1  # did not fetch the next page
+
+    def test_deadline_stops_paging_between_pages(self, mock_api, monkeypatch):
+        # Full pages would page forever; a deadline already in the past on the 2nd
+        # loop iteration must stop paging and report a disclosed partial.
+        clock = iter([1000.0, 1000.0, 9999.0])  # deadline_after start, 1st check, 2nd check (past)
+        monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: next(clock, 9999.0))
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(
+            return_value=httpx.Response(200, json=[{"type": "LOGIN", "time": i} for i in range(3)])
+        )
+        deadline = client_mod.deadline_after(30.0)  # start=1000 -> deadline 1030
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3, deadline=deadline)
+        assert truncated is True
+        assert route.call_count == 1  # 1st check (1000<1030) fetched one page; 2nd check (9999>1030) stopped
+        assert len(result) == 3
 
 
 class TestGetAdminEvents:
@@ -264,8 +312,9 @@ class TestGetAdminEventsAll:
                 httpx.Response(200, json=page2),
             ]
         )
-        result = KeyCloakClient().get_admin_events_all(operation_types=["UPDATE"], page_size=3)
+        result, truncated = KeyCloakClient().get_admin_events_all(operation_types=["UPDATE"], page_size=3)
         assert len(result) == 4
+        assert truncated is False
 
 
 class TestGetClientByClientId:
