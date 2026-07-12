@@ -96,29 +96,27 @@ def _deadline_seconds() -> float | None:
     return secs if secs > 0 else None
 
 
-def _max_events() -> int | None:
-    """Per-pagination cap on events fetched, from KEYCLOAK_MAX_EVENTS (default 200000).
-
-    0 or negative disables the count cap (rely on the deadline alone).
-    """
+def _positive_int_env(name: str, default: int) -> int | None:
+    """A positive-int bound from env var ``name`` (unparseable falls back to ``default``);
+    0 or negative disables it (returns ``None``). Shared body behind the count caps."""
     try:
-        cap = int(os.environ.get("KEYCLOAK_MAX_EVENTS", str(_MAX_EVENTS_DEFAULT)))
+        val = int(os.environ.get(name, str(default)))
     except ValueError:
-        cap = _MAX_EVENTS_DEFAULT
-    return cap if cap > 0 else None
+        val = default
+    return val if val > 0 else None
+
+
+def _max_events() -> int | None:
+    """Per-pagination cap on events fetched (KEYCLOAK_MAX_EVENTS, default 200000; 0/negative
+    disables the count cap and relies on the deadline alone)."""
+    return _positive_int_env("KEYCLOAK_MAX_EVENTS", _MAX_EVENTS_DEFAULT)
 
 
 def _max_users() -> int | None:
-    """Default cap on users enumerated by get_totp_users, from KEYCLOAK_MAX_USERS (default 5000).
-
-    Used only when the tool's ``max_users`` argument is 0. 0 or negative disables the default
-    cap (scan the whole realm, bounded only by the deadline).
-    """
-    try:
-        cap = int(os.environ.get("KEYCLOAK_MAX_USERS", str(_MAX_USERS_DEFAULT)))
-    except ValueError:
-        cap = _MAX_USERS_DEFAULT
-    return cap if cap > 0 else None
+    """Default cap on users enumerated by get_totp_users (KEYCLOAK_MAX_USERS, default 5000;
+    0/negative scans the whole realm, bounded only by the deadline). Used only when the tool's
+    ``max_users`` argument is 0."""
+    return _positive_int_env("KEYCLOAK_MAX_USERS", _MAX_USERS_DEFAULT)
 
 
 def _with_warning(text: str, truncated: bool) -> str:

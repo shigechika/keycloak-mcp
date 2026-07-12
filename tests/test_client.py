@@ -267,13 +267,25 @@ class TestGetEventsAll:
         assert len(result) == 4
         assert truncated is False
 
+    def test_short_final_page_overshooting_cap_is_truncated(self, mock_api):
+        # A short page (drained) that OVERSHOOTS max_events — more items than the cap, so
+        # real data is trimmed away — must report truncated=True, not a complete exact-fit.
+        page = [{"type": "LOGIN", "time": i} for i in range(5)]  # short (5<100) but 5 > cap 3
+        mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=page))
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=100, max_events=3)
+        assert len(result) == 3  # trimmed
+        assert truncated is True  # 2 items dropped -> incomplete
+
     def test_deadline_stops_paging_between_pages(self, mock_api, monkeypatch):
         # Full pages would page forever; a deadline already in the past on the 2nd
         # loop iteration must stop paging and report a disclosed partial.
         clock = iter([1000.0, 1000.0, 9999.0])  # deadline_after start, 1st check, 2nd check (past)
         monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: next(clock, 9999.0))
+        # A single full page via side_effect (not return_value): if the deadline guard were
+        # removed the loop would try to fetch a 2nd page and raise StopIteration — a fast, clean
+        # failure instead of an infinite hang on an unbounded full-page source.
         route = mock_api.get(f"{ADMIN_BASE}/events").mock(
-            return_value=httpx.Response(200, json=[{"type": "LOGIN", "time": i} for i in range(3)])
+            side_effect=[httpx.Response(200, json=[{"type": "LOGIN", "time": i} for i in range(3)])]
         )
         deadline = client_mod.deadline_after(30.0)  # start=1000 -> deadline 1030
         result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3, deadline=deadline)

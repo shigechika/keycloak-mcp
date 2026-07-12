@@ -476,6 +476,7 @@ class TestGetIpActivity:
         "clients",
         "timeline",
         "truncated",
+        "events_capped",
     )
     _SUMMARY_KEYS = (
         "total_events",
@@ -1521,6 +1522,17 @@ class TestPartialDisclosure:
         ]
         result = server.get_ip_activity("10.0.0.1")
         assert result["events_capped"] is True
+        assert result["truncated"] is False  # timeline not capped -> the two flags are independent
+
+    @patch.object(server, "_kc")
+    def test_ip_activity_events_capped_false_on_complete_scan(self, mock):
+        # A fully-drained scan must report events_capped=False (no spurious partial signal).
+        mock.return_value.get_events_all.side_effect = [
+            _ev([{"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 1}]),
+            _ev([]),
+        ]
+        result = server.get_ip_activity("10.0.0.1")
+        assert result["events_capped"] is False
 
     @patch.object(server, "_kc")
     def test_totp_users_deadline_truncates_n_plus_1_loop(self, mock, monkeypatch):

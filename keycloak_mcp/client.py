@@ -127,9 +127,10 @@ class KeyCloakClient:
             all_items.extend(page)
             drained = len(page) < page_size  # a short page means the endpoint is exhausted
             if max_total is not None and len(all_items) >= max_total:
-                # Trimmed to the cap; "truncated" only if a full page suggests more remains
-                # (a short page that happens to reach the cap is a complete, exact-fit result).
-                return all_items[:max_total], not drained
+                # Trimmed to the cap. Truncated if we actually dropped items (a page that
+                # overshot the cap) OR a full page suggests more remains; a short page that
+                # lands exactly on the cap is a complete, exact-fit result.
+                return all_items[:max_total], len(all_items) > max_total or not drained
             if drained:
                 return all_items, False
             params["first"] += page_size
