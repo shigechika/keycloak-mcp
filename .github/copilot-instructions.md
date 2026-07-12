@@ -96,6 +96,36 @@ drops a failure with no visible trace at all (not even a stderr log).
   Windows) — don't suggest removing or "simplifying" it as redundant
   with the unit tests.
 
+## 5. Heavy event/scan tools must be bounded and disclose partial results
+
+Keycloak's `events?first=N` pagination degrades badly at deep offsets, so a
+wide window (e.g. a week of a busy realm) can blow past the ~60s tool-call
+gateway and — worse — keep hammering the IdP after the client has given up.
+Every heavy event/enumeration tool is therefore bounded and discloses when it
+stopped early (PR #37):
+
+- `_paginate` (`client.py`) returns `(items, truncated)`, stopping on a
+  per-pagination count cap (`max_total`) or a shared wall-clock `deadline`
+  (`deadline_after` / `past_deadline`). `get_events_all` /
+  `get_admin_events_all` / `list_users_all` propagate that tuple — a caller
+  that throws the `truncated` bool away is a bug.
+- Policy lives in `server.py`: `KEYCLOAK_DEADLINE` (default 45s, the wall-clock
+  budget), `KEYCLOAK_MAX_EVENTS` (per-pagination event cap), `KEYCLOAK_MAX_USERS`
+  (enumeration cap for `get_totp_users`). A tool that runs several paginations
+  in one call must compute **one** deadline
+  (`deadline_after(_deadline_seconds())`) and share it across all of them (see
+  `daily_brief`, `get_ip_activity`, `_fetch_login_events`) — not restart the
+  budget per pagination.
+- Partial results must be disclosed, never presented as complete:
+  string-returning tools prepend `_PARTIAL_WARNING` via
+  `_with_warning(text, truncated)`; dict-returning tools expose a key (e.g.
+  `get_ip_activity`'s `events_capped`). `get_totp_users`'s N+1 credential loop
+  also checks the deadline and discloses when it stops short.
+
+So a new tool that paginates events/users — or a new probe added to
+`daily_brief` — must be deadline+cap bounded, must share the call's single
+deadline, and must surface truncation to the caller. Flag one that doesn't.
+
 # Out of scope for review comments
 
 - `release-please.yml` using `secrets.RELEASE_PLEASE_TOKEN` instead of
