@@ -1,9 +1,20 @@
 """Tests for MCP server tools."""
 
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from keycloak_mcp import server
+
+
+def _ev(items, truncated=False):
+    """Shape a client events/users pagination mock: (items, truncated)."""
+    return (items, truncated)
+
+
+def _evs(lists):
+    """Shape a client pagination mock's side_effect: each returned list -> (list, False)."""
+    return [(items, False) for items in lists]
+
 
 SAMPLE_USER = {
     "id": "user-uuid-1",
@@ -198,10 +209,12 @@ class TestGetUserCredentials:
 class TestGetTotpUsers:
     @patch.object(server, "_kc")
     def test_counts_and_percentage(self, mock):
-        mock.return_value.list_users_all.return_value = [
-            {"id": "1", "username": "alice@example.com"},
-            {"id": "2", "username": "bob@example.com"},
-        ]
+        mock.return_value.list_users_all.return_value = _ev(
+            [
+                {"id": "1", "username": "alice@example.com"},
+                {"id": "2", "username": "bob@example.com"},
+            ]
+        )
         mock.return_value.get_user_credentials.side_effect = [
             [{"type": "password"}, {"type": "otp"}],
             [{"type": "password"}],
@@ -215,22 +228,26 @@ class TestGetTotpUsers:
 
     @patch.object(server, "_kc")
     def test_max_users_caps_scan(self, mock):
-        # The client enforces the cap (via list_users_all limit=), so it returns
-        # only the capped set; the tool must pass the limit through and flag it.
-        mock.return_value.list_users_all.return_value = [{"id": str(i), "username": f"u{i}"} for i in range(2)]
+        # The client enforces the cap (via list_users_all limit=) and reports it via the
+        # truncated flag; the tool must pass the limit + deadline through and disclose it.
+        mock.return_value.list_users_all.return_value = _ev(
+            [{"id": str(i), "username": f"u{i}"} for i in range(2)], truncated=True
+        )
         mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
         result = server.get_totp_users(max_users=2)
-        mock.return_value.list_users_all.assert_called_once_with(enabled_only=True, limit=2)
-        assert "capped at max_users=2" in result
+        mock.return_value.list_users_all.assert_called_once_with(enabled_only=True, limit=2, deadline=ANY)
+        assert "capped by max_users=2" in result  # explicit arg reported precisely, not the env vars
         assert mock.return_value.get_user_credentials.call_count == 2
 
     @patch.object(server, "_kc")
     def test_credential_lookup_error_is_counted(self, mock):
         # One user's credential fetch raises; the scan continues and reports it.
-        mock.return_value.list_users_all.return_value = [
-            {"id": "1", "username": "alice@example.com"},
-            {"id": "2", "username": "bob@example.com"},
-        ]
+        mock.return_value.list_users_all.return_value = _ev(
+            [
+                {"id": "1", "username": "alice@example.com"},
+                {"id": "2", "username": "bob@example.com"},
+            ]
+        )
         mock.return_value.get_user_credentials.side_effect = [
             [{"type": "otp"}],
             RuntimeError("boom"),
@@ -243,13 +260,13 @@ class TestGetTotpUsers:
 
     @patch.object(server, "_kc")
     def test_no_users(self, mock):
-        mock.return_value.list_users_all.return_value = []
+        mock.return_value.list_users_all.return_value = _ev([])
         result = server.get_totp_users()
         assert "No users found" in result
 
     @patch.object(server, "_kc")
     def test_list_users_suppressed(self, mock):
-        mock.return_value.list_users_all.return_value = [{"id": "1", "username": "alice@example.com"}]
+        mock.return_value.list_users_all.return_value = _ev([{"id": "1", "username": "alice@example.com"}])
         mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
         result = server.get_totp_users(list_users=False)
         assert "Users with TOTP:" not in result
@@ -401,7 +418,7 @@ class TestGetLoginStats:
     def test_stats(self, mock):
         success = [{"type": "LOGIN"}] * 10
         failure = [{"type": "LOGIN_ERROR", "details": {"username": "alice"}}] * 3
-        mock.return_value = (success, failure)
+        mock.return_value = (success, failure, False)
         result = server.get_login_stats()
         assert "Success: 10" in result
         assert "Failure: 3" in result
@@ -413,7 +430,7 @@ class TestGetLoginStatsByHour:
     def test_by_hour(self, mock):
         # Use a timestamp that maps to hour 10 in most timezones
         success = [{"type": "LOGIN", "time": 1700035200000}]  # 2023-11-15 10:00 UTC
-        mock.return_value = (success, [])
+        mock.return_value = (success, [], False)
         result = server.get_login_stats_by_hour()
         assert "Login statistics by hour" in result
         assert "Total" in result
@@ -427,7 +444,7 @@ class TestGetLoginFailuresByIp:
             {"type": "LOGIN_ERROR", "ipAddress": "10.0.0.1", "time": 1700000001000},
             {"type": "LOGIN_ERROR", "ipAddress": "10.0.0.2", "time": 1700000002000},
         ]
-        mock.return_value.get_events_all.return_value = failures
+        mock.return_value.get_events_all.return_value = _ev(failures)
         result = server.get_login_failures_by_ip()
         assert "3 total" in result
         assert "2 unique IPs" in result
@@ -439,7 +456,7 @@ class TestGetLoginFailuresByIp:
             {"type": "LOGIN_ERROR", "ipAddress": "::1", "time": 1000},
             {"type": "LOGIN_ERROR", "ipAddress": "0:0:0:0:0:0:0:1", "time": 2000},
         ]
-        mock.return_value.get_events_all.return_value = failures
+        mock.return_value.get_events_all.return_value = _ev(failures)
         result = server.get_login_failures_by_ip()
         assert "2 total" in result
         assert "1 unique IPs" in result
@@ -459,6 +476,7 @@ class TestGetIpActivity:
         "clients",
         "timeline",
         "truncated",
+        "events_capped",
     )
     _SUMMARY_KEYS = (
         "total_events",
@@ -505,7 +523,7 @@ class TestGetIpActivity:
                 "error": "invalid_user_credentials",
             },
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, login_error_events]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, login_error_events])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["summary"]["total_events"] == 3
@@ -550,7 +568,7 @@ class TestGetIpActivity:
                 "error": "invalid_user_credentials",
             },
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, login_error_events]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, login_error_events])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["summary"]["total_events"] == 1
@@ -559,7 +577,7 @@ class TestGetIpActivity:
 
     @patch.object(server, "_kc")
     def test_no_match_returns_fixed_shape(self, mock):
-        mock.return_value.get_events_all.side_effect = [[], []]
+        mock.return_value.get_events_all.side_effect = _evs([[], []])
         result = server.get_ip_activity("10.0.0.1")
 
         for key in self._FIXED_KEYS:
@@ -587,7 +605,7 @@ class TestGetIpActivity:
             }
             for i in range(5)
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1", max_timeline=2)
 
         assert len(result["timeline"]) == 2
@@ -597,7 +615,7 @@ class TestGetIpActivity:
 
     @patch.object(server, "_kc")
     def test_event_types_widening(self, mock):
-        mock.return_value.get_events_all.side_effect = [[], [], []]
+        mock.return_value.get_events_all.side_effect = _evs([[], [], []])
         result = server.get_ip_activity("10.0.0.1", event_types="LOGIN,LOGIN_ERROR,LOGOUT")
 
         assert mock.return_value.get_events_all.call_count == 3
@@ -606,7 +624,7 @@ class TestGetIpActivity:
     @patch.object(server, "_site_classifier")
     @patch.object(server, "_kc")
     def test_site_matched(self, mock_kc, mock_sc):
-        mock_kc.return_value.get_events_all.side_effect = [[], []]
+        mock_kc.return_value.get_events_all.side_effect = _evs([[], []])
         mock_sc.return_value.classify.return_value = "hq"
         mock_sc.return_value.available = True
         result = server.get_ip_activity("10.0.0.1")
@@ -617,7 +635,7 @@ class TestGetIpActivity:
     @patch.object(server, "_site_classifier")
     @patch.object(server, "_kc")
     def test_site_unmatched_but_configured(self, mock_kc, mock_sc):
-        mock_kc.return_value.get_events_all.side_effect = [[], []]
+        mock_kc.return_value.get_events_all.side_effect = _evs([[], []])
         mock_sc.return_value.classify.return_value = None
         mock_sc.return_value.available = True
         result = server.get_ip_activity("203.0.113.5")
@@ -628,7 +646,7 @@ class TestGetIpActivity:
     @patch.object(server, "_site_classifier")
     @patch.object(server, "_kc")
     def test_site_unconfigured(self, mock_kc, mock_sc):
-        mock_kc.return_value.get_events_all.side_effect = [[], []]
+        mock_kc.return_value.get_events_all.side_effect = _evs([[], []])
         mock_sc.return_value.classify.return_value = None
         mock_sc.return_value.available = False
         result = server.get_ip_activity("203.0.113.5")
@@ -647,7 +665,7 @@ class TestGetIpActivity:
                 "clientId": "app",
             }
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1")
 
         for key in self._FIXED_KEYS:
@@ -683,7 +701,7 @@ class TestGetIpActivity:
                 "error": "invalid_user_credentials",
             },
         ]
-        mock.return_value.get_events_all.side_effect = [[], login_error_events]
+        mock.return_value.get_events_all.side_effect = _evs([[], login_error_events])
         result = server.get_ip_activity("10.0.0.1")
 
         alice = result["users"][0]
@@ -692,7 +710,7 @@ class TestGetIpActivity:
 
     @patch.object(server, "_kc")
     def test_default_date_from_applied(self, mock):
-        mock.return_value.get_events_all.side_effect = [[], []]
+        mock.return_value.get_events_all.side_effect = _evs([[], []])
         server.get_ip_activity("10.0.0.1")
 
         first_call = mock.return_value.get_events_all.call_args_list[0]
@@ -709,7 +727,7 @@ class TestGetIpActivity:
                 "clientId": "app",
             }
         ]
-        mock.return_value.get_events_all.side_effect = [[], [], logout_events]
+        mock.return_value.get_events_all.side_effect = _evs([[], [], logout_events])
         result = server.get_ip_activity("10.0.0.1", event_types="LOGIN,LOGIN_ERROR,LOGOUT")
 
         assert result["summary"]["login_success"] == 1
@@ -729,7 +747,7 @@ class TestGetIpActivity:
                 "clientId": "app",
             }
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1", max_timeline=0)
 
         assert result["timeline"] == []
@@ -748,7 +766,7 @@ class TestGetIpActivity:
 
     @patch.object(server, "_kc")
     def test_success_has_null_error(self, mock):
-        mock.return_value.get_events_all.side_effect = [[], []]
+        mock.return_value.get_events_all.side_effect = _evs([[], []])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["error"] is None
@@ -765,7 +783,7 @@ class TestGetIpActivity:
                 "clientId": "app",
             }
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["users"] == [{"username": "uuid-1", "success": 1, "failure": 0, "errors": []}]
@@ -773,7 +791,7 @@ class TestGetIpActivity:
     @patch.object(server, "_kc")
     def test_clientid_default_consistent_across_clients_and_timeline(self, mock):
         login_events = [{"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 1000, "details": {"username": "alice"}}]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["clients"] == [{"client_id": "unknown", "success": 1, "failure": 0}]
@@ -791,7 +809,7 @@ class TestGetIpActivity:
             },
             {"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 2000, "details": {"username": "bob"}, "clientId": "app"},
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("10.0.0.1")
 
         assert result["summary"]["total_events"] == 2
@@ -809,7 +827,7 @@ class TestGetIpActivity:
                 "clientId": "app",
             }
         ]
-        mock.return_value.get_events_all.side_effect = [login_events, []]
+        mock.return_value.get_events_all.side_effect = _evs([login_events, []])
         result = server.get_ip_activity("::1")
 
         assert result["summary"]["total_events"] == 1
@@ -820,7 +838,7 @@ class TestGetLoginStatsByClient:
     def test_by_client(self, mock):
         success = [{"clientId": "xflow"}, {"clientId": "xflow"}, {"clientId": "zabbix"}]
         failure = [{"clientId": "xflow"}]
-        mock.return_value = (success, failure)
+        mock.return_value = (success, failure, False)
         result = server.get_login_stats_by_client()
         assert "xflow" in result
         assert "zabbix" in result
@@ -974,7 +992,7 @@ class TestDetectLoginLoops:
             }
             for i in range(20)
         ]
-        mock.return_value.get_events_all.return_value = events
+        mock.return_value.get_events_all.return_value = _ev(events)
         result = server.detect_login_loops(threshold=10, window_seconds=60)
         assert "1 user(s)" in result
         assert "looper@example.com" in result
@@ -992,7 +1010,7 @@ class TestDetectLoginLoops:
             }
             for i in range(5)
         ]
-        mock.return_value.get_events_all.return_value = events
+        mock.return_value.get_events_all.return_value = _ev(events)
         result = server.detect_login_loops(threshold=10, window_seconds=60)
         assert "No login loops" in result
 
@@ -1012,14 +1030,14 @@ class TestDetectLoginLoops:
                         "clientId": "app",
                     }
                 )
-        mock.return_value.get_events_all.return_value = events
+        mock.return_value.get_events_all.return_value = _ev(events)
         result = server.detect_login_loops(threshold=10, window_seconds=60, top=2)
         assert "3 user(s)" in result
         assert "showing top 2" in result
 
     @patch.object(server, "_kc")
     def test_empty_events(self, mock):
-        mock.return_value.get_events_all.return_value = []
+        mock.return_value.get_events_all.return_value = _ev([])
         result = server.detect_login_loops()
         assert "No LOGIN events" in result
 
@@ -1250,12 +1268,14 @@ class TestDailyBrief:
         pw_updates = pw_updates or []
         admin_evts = admin_evts or []
         sessions = sessions or [{"clientId": "xflow", "active": "3"}]
-        mock.return_value.get_events_all.side_effect = [
-            [_SAMPLE_LOGIN_EVENT] * success_count,
-            failure_events,
-            pw_updates,
-        ]
-        mock.return_value.get_admin_events_all.return_value = admin_evts
+        mock.return_value.get_events_all.side_effect = _evs(
+            [
+                [_SAMPLE_LOGIN_EVENT] * success_count,
+                failure_events,
+                pw_updates,
+            ]
+        )
+        mock.return_value.get_admin_events_all.return_value = _ev(admin_evts)
         mock.return_value.get_session_stats.return_value = sessions
 
     @patch.object(server, "_kc")
@@ -1410,3 +1430,148 @@ class TestHealthCheck:
         assert result["status"] == "degraded"
         assert result["detail"] == "FakeHTTPError 401"
         assert "boom" not in result["detail"]
+
+
+class TestBoundsEnvParsing:
+    def test_deadline_default(self, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_DEADLINE", raising=False)
+        assert server._deadline_seconds() == 45.0
+
+    def test_deadline_custom(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "20")
+        assert server._deadline_seconds() == 20.0
+
+    def test_deadline_zero_and_negative_disable(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "0")
+        assert server._deadline_seconds() is None
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "-1")
+        assert server._deadline_seconds() is None
+
+    def test_deadline_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "foo")
+        assert server._deadline_seconds() == 45.0
+
+    def test_deadline_non_finite_falls_back_not_disabled(self, monkeypatch):
+        # "nan"/"inf" parse as floats but must NOT silently disable the deadline.
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "nan")
+        assert server._deadline_seconds() == 45.0
+        monkeypatch.setenv("KEYCLOAK_DEADLINE", "inf")
+        assert server._deadline_seconds() == 45.0
+
+    def test_max_events(self, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_MAX_EVENTS", raising=False)
+        assert server._max_events() == 200000
+        monkeypatch.setenv("KEYCLOAK_MAX_EVENTS", "1000")
+        assert server._max_events() == 1000
+        monkeypatch.setenv("KEYCLOAK_MAX_EVENTS", "0")
+        assert server._max_events() is None
+        monkeypatch.setenv("KEYCLOAK_MAX_EVENTS", "-5")
+        assert server._max_events() is None
+        monkeypatch.setenv("KEYCLOAK_MAX_EVENTS", "foo")
+        assert server._max_events() == 200000
+
+    def test_max_users(self, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_MAX_USERS", raising=False)
+        assert server._max_users() == 5000
+        monkeypatch.setenv("KEYCLOAK_MAX_USERS", "10")
+        assert server._max_users() == 10
+        monkeypatch.setenv("KEYCLOAK_MAX_USERS", "0")
+        assert server._max_users() is None
+        monkeypatch.setenv("KEYCLOAK_MAX_USERS", "foo")
+        assert server._max_users() == 5000
+
+
+class TestPartialDisclosure:
+    """A truncated (deadline/cap) fetch must be disclosed, never silently under-reported."""
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_warns_when_truncated(self, mock):
+        mock.return_value = ([{"type": "LOGIN"}], [], True)
+        result = server.get_login_stats()
+        assert result.startswith("⚠️ PARTIAL RESULT")
+        assert "Success: 1" in result  # the partial data is still shown
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_no_warning_when_complete(self, mock):
+        mock.return_value = ([{"type": "LOGIN"}], [], False)
+        assert "PARTIAL RESULT" not in server.get_login_stats()
+
+    @patch.object(server, "_kc")
+    def test_login_failures_by_ip_warns_when_truncated(self, mock):
+        mock.return_value.get_events_all.return_value = _ev(
+            [{"type": "LOGIN_ERROR", "ipAddress": "10.0.0.1", "time": 1}], truncated=True
+        )
+        assert server.get_login_failures_by_ip().startswith("⚠️ PARTIAL RESULT")
+
+    @patch.object(server, "_kc")
+    def test_detect_login_loops_warns_when_truncated(self, mock):
+        # A truncated scan must not be trusted to conclude "no loops".
+        mock.return_value.get_events_all.return_value = _ev(
+            [{"type": "LOGIN", "details": {"username": "x"}, "time": 1}], truncated=True
+        )
+        result = server.detect_login_loops()
+        assert result.startswith("⚠️ PARTIAL RESULT")
+        assert "No login loops" in result
+
+    @patch.object(server, "_kc")
+    def test_ip_activity_sets_events_capped_distinct_from_timeline(self, mock):
+        # events_capped reflects a truncated pagination; the timeline 'truncated' flag is separate.
+        mock.return_value.get_events_all.side_effect = [
+            _ev([{"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 1}], truncated=True),
+            _ev([]),
+        ]
+        result = server.get_ip_activity("10.0.0.1")
+        assert result["events_capped"] is True
+        assert result["truncated"] is False  # timeline not capped -> the two flags are independent
+
+    @patch.object(server, "_kc")
+    def test_ip_activity_events_capped_false_on_complete_scan(self, mock):
+        # A fully-drained scan must report events_capped=False (no spurious partial signal).
+        mock.return_value.get_events_all.side_effect = [
+            _ev([{"type": "LOGIN", "ipAddress": "10.0.0.1", "time": 1}]),
+            _ev([]),
+        ]
+        result = server.get_ip_activity("10.0.0.1")
+        assert result["events_capped"] is False
+
+    @patch.object(server, "_kc")
+    def test_totp_users_deadline_truncates_n_plus_1_loop(self, mock, monkeypatch):
+        # The deadline must stop the per-user credential loop and disclose the cap.
+        mock.return_value.list_users_all.return_value = _ev([{"id": str(i), "username": f"u{i}"} for i in range(5)])
+        mock.return_value.get_user_credentials.return_value = [{"type": "otp"}]
+        calls = {"n": 0}
+
+        def fake_past(_deadline):  # False for the first two iterations, then True
+            calls["n"] += 1
+            return calls["n"] > 2
+
+        monkeypatch.setattr("keycloak_mcp.server.past_deadline", fake_past)
+        result = server.get_totp_users()
+        assert "capped by the time budget (KEYCLOAK_DEADLINE)" in result
+        assert "scanned 2 enabled users" in result  # stopped after 2 of 5
+        assert mock.return_value.get_user_credentials.call_count == 2
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_by_hour_warns_when_truncated(self, mock):
+        mock.return_value = ([{"type": "LOGIN", "time": 1700035200000}], [], True)
+        assert server.get_login_stats_by_hour().startswith("⚠️ PARTIAL RESULT")
+
+    @patch.object(server, "_fetch_login_events")
+    def test_login_stats_by_client_warns_when_truncated(self, mock):
+        mock.return_value = ([{"clientId": "x"}], [], True)
+        assert server.get_login_stats_by_client().startswith("⚠️ PARTIAL RESULT")
+
+    @patch.object(server, "_kc")
+    def test_daily_brief_discloses_partial(self, mock):
+        # A pagination that blew the deadline/cap must flip the brief to WARNING with a
+        # [PARTIAL] note — the flagship tool must not under-report events silently.
+        mock.return_value.get_events_all.side_effect = [
+            _ev([{"type": "LOGIN", "time": 1, "ipAddress": "1.1.1.1"}], truncated=True),  # LOGIN
+            _ev([]),  # LOGIN_ERROR
+            _ev([]),  # UPDATE_PASSWORD
+        ]
+        mock.return_value.get_admin_events_all.return_value = _ev([])
+        mock.return_value.get_session_stats.return_value = [{"clientId": "x", "active": "1"}]
+        result = server.daily_brief()
+        assert "## WARNING" in result
+        assert "[PARTIAL]" in result

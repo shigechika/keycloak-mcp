@@ -116,6 +116,9 @@ pip install -e .
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
 | `KEYCLOAK_SITES_INI` | INI file for IP-to-site labeling (see below) | *unset* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | Default look-back window for event tools when `date_from` is omitted. Set to `0` to scan full history (can hang on large realms). | `24` |
+| `KEYCLOAK_DEADLINE` | Per-call wall-clock budget (seconds) for the heavy event/TOTP tools. When a wide window / large realm would exceed it, the tool stops and returns a **disclosed partial** (⚠️ warning) instead of running past the client's ~60s gateway timeout and hammering KeyCloak. `0` or negative disables. | `45` |
+| `KEYCLOAK_MAX_EVENTS` | Per-pagination cap on events fetched by the event tools (also bounds how deep the slow high-offset pagination goes). Over the cap the result is a disclosed partial. `0` or negative disables. | `200000` |
+| `KEYCLOAK_MAX_USERS` | Default cap on users scanned by `get_totp_users` when its `max_users` argument is `0` (each user costs one credential call). `0` or negative disables (whole realm, bounded only by `KEYCLOAK_DEADLINE`). | `5000` |
 
 ### KeyCloak client setup
 

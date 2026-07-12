@@ -38,7 +38,13 @@ Plain-`pip` equivalents are documented in README.md's Development section.
 
 Required env vars: `KEYCLOAK_URL`, `KEYCLOAK_CLIENT_ID`,
 `KEYCLOAK_CLIENT_SECRET`. Optional: `KEYCLOAK_REALM` (default `master`),
-`KEYCLOAK_SITES_INI`, `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` (default 24).
+`KEYCLOAK_SITES_INI`, `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` (default 24), and the
+heavy-tool bounds `KEYCLOAK_DEADLINE` (default 45s), `KEYCLOAK_MAX_EVENTS`
+(default 200000), `KEYCLOAK_MAX_USERS` (default 5000) — a wall-clock deadline +
+caps so a wide event window or a whole-realm `get_totp_users` returns a
+disclosed partial (⚠️) instead of blowing the ~60s gateway and hammering
+KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
+`_deadline_seconds`/`_max_events`/`_max_users`). Each `0`/negative disables.
 
 ## Conventions
 
