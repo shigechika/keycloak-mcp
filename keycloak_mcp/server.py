@@ -672,9 +672,10 @@ def _fetch_login_events(
     """Fetch all LOGIN and LOGIN_ERROR events with bounded pagination.
 
     A single wall-clock ``deadline`` (computed here from KEYCLOAK_DEADLINE when not
-    supplied) and the KEYCLOAK_MAX_EVENTS cap are SHARED across both paginations, so the
-    pair together stays under the tool-call gateway timeout. When a caller (e.g.
-    ``daily_brief``) already runs several paginations, it passes its own shared ``deadline``.
+    supplied) is SHARED across both paginations, so the pair together stays under the
+    tool-call gateway timeout; the KEYCLOAK_MAX_EVENTS cap applies per pagination (each of
+    LOGIN / LOGIN_ERROR may collect up to the cap). When a caller (e.g. ``daily_brief``)
+    already runs several paginations, it passes its own shared ``deadline``.
 
     Returns ``(success, failure, truncated)`` — ``truncated`` True if either pagination was
     cut short (results incomplete).
@@ -876,8 +877,9 @@ def get_ip_activity(
     all_events: list[dict] = []
     events_capped = False
     if error is None:
-        # One deadline + cap SHARED across every event type's pagination, so widening
-        # event_types or the window can't page unbounded past the tool-call timeout.
+        # One deadline SHARED across every event type's pagination (the cap applies per
+        # type), so widening event_types or the window can't page unbounded past the
+        # tool-call timeout.
         deadline = deadline_after(_deadline_seconds())
         cap = _max_events()
         for et in types:
@@ -1389,8 +1391,9 @@ def daily_brief(
     now_str = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
     date_from = (datetime.now() - timedelta(hours=since_hours)).strftime("%Y-%m-%d")
 
-    # One deadline + cap SHARED across all four paginations so the whole brief stays under
-    # the tool-call gateway timeout (a truncated section just reports a lower bound).
+    # One deadline SHARED across all four paginations so the whole brief stays under the
+    # tool-call gateway timeout (the cap applies per pagination; a truncated section just
+    # reports a lower bound).
     deadline = deadline_after(_deadline_seconds())
     cap = _max_events()
     try:
