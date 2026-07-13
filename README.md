@@ -21,6 +21,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | `reset_passwords_batch` | Bulk reset from CSV (`username,password` per line; blank password is generated) |
 | `get_user_sessions` | Active sessions for one user, timestamps in local time |
 | `logout_user` | Kill all active sessions for one user |
+| `set_user_enabled` | Enable or disable one user; disabling blocks all logins (custom attributes preserved) |
 
 ### MFA / Credentials
 

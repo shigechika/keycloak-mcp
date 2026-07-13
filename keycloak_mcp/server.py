@@ -416,6 +416,36 @@ def logout_user(username: str) -> str:
     return f"Logged out {username} ({len(sessions)} session(s) removed)"
 
 
+@mcp.tool()
+def set_user_enabled(username: str, enabled: bool) -> str:
+    """Enable or disable a user account.
+
+    Disabling blocks all authentication (SSO logins) for the user — the
+    containment action for a compromised or decommissioned account. Only the
+    ``enabled`` flag is changed; custom attributes are preserved.
+
+    Disabling does not terminate existing sessions (an already-issued token
+    stays valid until it expires), so when disabling this reports how many
+    sessions remain and to run ``logout_user`` to end them immediately.
+
+    Args:
+        username: Exact username (email).
+        enabled: True to enable, False to disable.
+    """
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    if u.get("enabled") == enabled:
+        return f"{username} already enabled={enabled} — no change"
+    _kc().set_user_enabled(u["id"], enabled)
+    msg = f"Set {username} enabled={enabled}"
+    if not enabled:
+        sessions = _kc().get_user_sessions(u["id"])
+        if sessions:
+            msg += f"; {len(sessions)} active session(s) remain — run logout_user to terminate them"
+    return msg
+
+
 # ---- MFA / credential tools ----
 
 # KeyCloak credential `type` value for TOTP/HOTP authenticators.

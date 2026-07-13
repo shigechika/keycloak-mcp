@@ -21,6 +21,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | `reset_passwords_batch` | CSV（`username,password` 形式、パスワード空欄は自動生成）で一括リセット |
 | `get_user_sessions` | ユーザのアクティブセッション（時刻はローカルタイム） |
 | `logout_user` | ユーザのセッションをすべて強制終了 |
+| `set_user_enabled` | ユーザを有効化 / 無効化。無効化で全ログインを遮断（独自属性は保持） |
 
 ### MFA・クレデンシャル
 

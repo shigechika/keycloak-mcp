@@ -197,6 +197,22 @@ class KeyCloakClient:
         """Remove all sessions for a user (force logout)."""
         return self._delete(f"/users/{user_id}/sessions")
 
+    def set_user_enabled(self, user_id: str, enabled: bool) -> int:
+        """Enable or disable a user account.
+
+        Disabling blocks all authentication for the user — KeyCloak rejects
+        logins for disabled accounts — which is the containment action for a
+        compromised or decommissioned user.
+
+        Fetches the current representation and toggles only ``enabled`` before
+        the PUT, so custom attributes (temp_password, SSO / Shibboleth
+        extension attributes, …) are preserved rather than dropped by a
+        partial update. Returns the PUT status code.
+        """
+        rep = self._get(f"/users/{user_id}")
+        rep["enabled"] = enabled
+        return self._put(f"/users/{user_id}", rep)
+
     def get_user_groups(self, user_id: str) -> list[dict]:
         """Get groups a user belongs to."""
         return self._get(f"/users/{user_id}/groups")
