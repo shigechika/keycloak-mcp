@@ -1,5 +1,7 @@
 """Tests for KeyCloakClient."""
 
+import json
+
 import httpx
 import pytest
 
@@ -102,6 +104,24 @@ class TestResetPassword:
         mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1/reset-password").mock(return_value=httpx.Response(204))
         status = KeyCloakClient().reset_password("user-uuid-1", "newpass")
         assert status == 204
+
+
+class TestSetUserEnabled:
+    def test_disable_preserves_attributes(self, mock_api):
+        rep = {
+            "id": "user-uuid-1",
+            "username": "alice@example.com",
+            "enabled": True,
+            "attributes": {"temp_password": ["x"], "sso_ext": ["y"]},
+        }
+        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(200, json=rep))
+        put_route = mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(204))
+        status = KeyCloakClient().set_user_enabled("user-uuid-1", False)
+        assert status == 204
+        sent = json.loads(put_route.calls.last.request.content)
+        assert sent["enabled"] is False
+        # Custom attributes must survive the toggle, not be dropped.
+        assert sent["attributes"] == {"temp_password": ["x"], "sso_ext": ["y"]}
 
 
 class TestGetUserGroups:

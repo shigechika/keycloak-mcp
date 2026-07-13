@@ -977,6 +977,39 @@ class TestLogoutUser:
         assert "not found" in result
 
 
+class TestSetUserEnabled:
+    @patch.object(server, "_kc")
+    def test_disable(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_sessions.return_value = []
+        result = server.set_user_enabled("alice@example.com", False)
+        assert "enabled=False" in result
+        mock.return_value.set_user_enabled.assert_called_once_with(SAMPLE_USER["id"], False)
+
+    @patch.object(server, "_kc")
+    def test_disable_warns_active_sessions(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_sessions.return_value = [
+            {"clients": {"c1": "app"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+        ]
+        result = server.set_user_enabled("alice@example.com", False)
+        assert "1 active session(s) remain" in result
+        assert "logout_user" in result
+
+    @patch.object(server, "_kc")
+    def test_no_change_skips_write(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER  # enabled=True
+        result = server.set_user_enabled("alice@example.com", True)
+        assert "no change" in result
+        mock.return_value.set_user_enabled.assert_not_called()
+
+    @patch.object(server, "_kc")
+    def test_user_not_found(self, mock):
+        mock.return_value.get_user_by_username.return_value = None
+        result = server.set_user_enabled("nobody", False)
+        assert "not found" in result
+
+
 class TestDetectLoginLoops:
     @patch.object(server, "_kc")
     def test_detects_loop(self, mock):
