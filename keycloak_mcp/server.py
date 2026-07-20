@@ -354,11 +354,12 @@ def reset_passwords_batch(csv_text: str, temporary: bool = False) -> str:
         try:
             _kc().reset_password(u["id"], password, temporary)
         except Exception as e:
-            # Log details to stderr for operator diagnostics; keep the
-            # tool response free of internal URLs or httpx repr payloads.
-            print(f"reset_passwords_batch: {username}: {type(e).__name__}: {e}", file=sys.stderr)
+            # Log to stderr for operator diagnostics. Do NOT interpolate the
+            # exception repr ({e}): an httpx error can carry the request body
+            # (including the password) in its payload. Log only type + status.
             status = getattr(getattr(e, "response", None), "status_code", None)
             label = f"{type(e).__name__} {status}" if status else type(e).__name__
+            print(f"reset_passwords_batch: {username}: {label}", file=sys.stderr)
             results.append(f"  NG  {username} — request failed ({label})")
             continue
         if generated:
