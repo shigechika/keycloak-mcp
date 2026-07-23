@@ -84,6 +84,10 @@ class KeyCloakClient:
         """PUT request to Admin API. Returns status code."""
         return self._send("PUT", path, json=json or {}).status_code
 
+    def _post(self, path: str, json: dict | None = None) -> int:
+        """POST request to Admin API. Returns status code."""
+        return self._send("POST", path, json=json).status_code
+
     def _delete(self, path: str) -> int:
         """DELETE request to Admin API. Returns status code."""
         return self._send("DELETE", path).status_code
@@ -194,8 +198,15 @@ class KeyCloakClient:
         return self._get(f"/users/{user_id}/sessions")
 
     def logout_user(self, user_id: str) -> int:
-        """Remove all sessions for a user (force logout)."""
-        return self._delete(f"/users/{user_id}/sessions")
+        """Remove all sessions for a user (force logout).
+
+        Uses ``POST /users/{id}/logout``. The Admin API exposes no DELETE on
+        the ``/users/{id}/sessions`` collection (that path is GET-only for
+        listing; individual sessions are removed via ``DELETE /sessions/{id}``),
+        so posting to the dedicated logout endpoint is the way to end all of a
+        user's sessions at once.
+        """
+        return self._post(f"/users/{user_id}/logout")
 
     def set_user_enabled(self, user_id: str, enabled: bool) -> int:
         """Enable or disable a user account.

@@ -402,9 +402,12 @@ class TestListClients:
 
 class TestLogoutUser:
     def test_success(self, mock_api):
-        mock_api.delete(f"{ADMIN_BASE}/users/user-uuid-1/sessions").mock(return_value=httpx.Response(204))
+        route = mock_api.post(f"{ADMIN_BASE}/users/user-uuid-1/logout").mock(
+            return_value=httpx.Response(204)
+        )
         status = KeyCloakClient().logout_user("user-uuid-1")
         assert status == 204
+        assert route.called
 
 
 class TestGetEventsWithClientId:
