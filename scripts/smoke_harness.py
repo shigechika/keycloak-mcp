@@ -275,7 +275,21 @@ def evaluate(
             shown = "redacted" if redact_details else repr(actual)
             return Result(tool, "FAIL", f"{path} missing or not numeric: {shown}")
         if actual < minimum:
+            # The bound is ours and stays; the observed value came from the
+            # payload — a holding, a headcount — so it is redacted with
+            # everything else the server said.
+            if redact_details:
+                return Result(tool, "FAIL", f"{path} below the required {minimum:g}")
             return Result(tool, "FAIL", f"{path}={actual:g} (want >= {minimum:g})")
+
+    # A named rows_key must resolve to a list even when the probe accepts an
+    # empty one: allow_empty waives the *count*, not the shape. Without this a
+    # tool answering {"events": "broken"} passes every check a probe can make.
+    if probe.rows_key is not None:
+        target = _dig(payload, probe.rows_key)
+        if not isinstance(target, list):
+            kind = type(target).__name__ if target is not None else "missing"
+            return Result(tool, "FAIL", f"{probe.rows_key} is {kind}, not a list")
 
     rows = count_rows(payload, probe.rows_key)
     if not probe.allow_empty:
@@ -366,6 +380,14 @@ async def run_probes(
                 except SkipProbe as exc:
                     return Result(name, "SKIP", str(exc), time.monotonic() - started)
                 except Exception as exc:  # noqa: BLE001 - a broken prerequisite is a finding
+                    # Same traceback handling as the tool call below: on
+                    # servers where nearly every probe discovers its arguments,
+                    # a failure here is the most common one there is, and
+                    # --traceback promising a stack everywhere except the
+                    # common case is worse than not promising one.
+                    if show_traceback:
+                        print(f"--- traceback: {name} (args_factory) ---", file=sys.stderr)
+                        traceback.print_exception(type(exc), exc, exc.__traceback__)
                     detail = f"args_factory failed: {_describe(exc, redact_details)}"
                     return Result(name, "FAIL", detail[:160], time.monotonic() - started)
                 # Merged, not replaced: a probe that sets both means "these are
