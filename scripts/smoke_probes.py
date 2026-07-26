@@ -156,12 +156,18 @@ PROBES: dict[str, Probe] = {
     ),
     "list_users_by_group": Probe(
         args_factory=_first_group,
-        must_match=(r"(members|No members in group|No group matching)",),
+        # Case-insensitive on purpose: the populated answer is "Members of
+        # '<group>' (N):" and the empty ones are lowercase sentences. A
+        # lowercase-only pattern matched the empty case alone, so this probe
+        # would have failed the moment the discovered group had a member.
+        must_match=(r"(?i)^members of |^no members in group|^no group matching",),
         min_chars=5,
     ),
     "get_user_attribute_history": Probe(
         args_factory=_first_username,
-        must_match=(r"(No attribute change events|attribute)",),
+        # Same trap: the populated answer is "Attribute history for <user>
+        # (N):" and none of its rows contain the lowercase word.
+        must_match=(r"^Attribute history for |^No attribute change events",),
         min_chars=5,
         timeout=300,
     ),
@@ -175,6 +181,11 @@ PROBES: dict[str, Probe] = {
         must_match=(r"^TOTP \(OTP\) usage \(scanned \d+|^No users found",),
         min_chars=5,
         timeout=300,
+        # It swallows a per-user credential failure into a counter and keeps
+        # going, so a service account that lost its credential-read role still
+        # produces "With TOTP: 0 (0.0%)" over a full scan. Zero errors is what
+        # separates a real answer from a scan that could not look.
+        must_not_match=(r"Errors:\s+[1-9]",),
     ),
     # -- clients / sessions ------------------------------------------------
     "get_client_sessions": Probe(
