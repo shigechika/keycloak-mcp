@@ -55,4 +55,13 @@ KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
 - Tests: `tests/test_client.py` mocks HTTP with `respx`; `tests/test_server.py`
   exercises tool functions directly with `unittest.mock`/`monkeypatch`;
   `tests/test_stdio_smoke.py` spawns the server as a subprocess to guard
-  against CRLF line-ending regressions on stdio.
+  against CRLF line-ending regressions on stdio; `tests/test_smoke_probes.py`
+  guards the live smoke test below and needs no realm, only the tool registry.
+- `scripts/` holds the live smoke test: `smoke_test.py` (CLI), its per-tool
+  specs in `smoke_probes.py`, and `smoke_harness.py` — the server-agnostic
+  engine, kept identical across the servers that share it, so fix engine bugs
+  once and sync the file rather than patching this copy. It runs every
+  registered tool against a real realm (see README). Adding a tool without a
+  probe spec fails CI: decide when you add the tool how anyone would know it
+  works. Probes stay read-only, name no realm-specific value, and cap anything
+  that enumerates the realm.

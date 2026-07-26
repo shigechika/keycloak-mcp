@@ -244,6 +244,34 @@ python3 -m venv .venv
 .venv/bin/ruff check .
 ```
 
+### Live smoke test
+
+`pytest` checks logic against fixtures; it cannot tell you that a tool has
+stopped returning real data. `scripts/smoke_test.py` runs **every registered
+tool** against the configured realm and fails on empty, malformed or error
+answers:
+
+```bash
+# needs KEYCLOAK_URL / KEYCLOAK_CLIENT_ID / KEYCLOAK_CLIENT_SECRET
+uv run python scripts/smoke_test.py
+uv run python scripts/smoke_test.py --only login_stats --traceback
+```
+
+- **Read-only.** Every state-changing tool (`reset_password`, `logout_user`,
+  `set_user_enabled`, `reset_passwords_batch`) is skipped by name, and a test
+  enforces that. The report prints tool names and statuses only — never
+  payloads, and server-authored error text is redacted too (KeyCloak quotes the
+  username it was asked about); `--traceback` still shows the full text on the
+  operator's own terminal.
+- Arguments that would identify real users, groups or IPs are **discovered at
+  run time**, never written into `scripts/smoke_probes.py`.
+- CI enforces the cheap half: a tool registered without a probe spec fails the
+  build (`tests/test_smoke_probes.py`), so adding a tool forces the question
+  "how would we know it works?".
+- `scripts/smoke_harness.py` is the engine and holds no KeyCloak knowledge:
+  it is kept identical across the servers that share it, so fix engine bugs
+  once and sync the file rather than patching this copy.
+
 ## License
 
 MIT

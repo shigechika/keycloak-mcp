@@ -95,6 +95,15 @@ drops a failure with no visible trace at all (not even a stderr log).
 - `tests/test_stdio_smoke.py` is a real regression guard (CRLF on
   Windows) — don't suggest removing or "simplifying" it as redundant
   with the unit tests.
+- `tests/test_smoke_probes.py` guards `scripts/smoke_test.py`, which
+  exercises every registered tool against a real realm. It asserts what
+  can be checked without one: every registered tool has a probe spec,
+  no spec targets a removed tool, state-changing tools stay skipped,
+  realm-enumerating tools are probed with an explicit small cap, and no
+  realm-specific literal (address, host, user) is written into the
+  specs — this repository is public. A new tool therefore needs an
+  entry in `scripts/smoke_probes.py` or CI fails; that is deliberate,
+  not an obstacle to route around.
 
 ## 5. Heavy event/scan tools must be bounded and disclose partial results
 

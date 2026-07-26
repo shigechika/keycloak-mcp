@@ -244,6 +244,22 @@ python3 -m venv .venv
 .venv/bin/ruff check .
 ```
 
+### 実データのスモークテスト
+
+`pytest` はフィクスチャに対するロジック検証なので、「ツールが実データを返さなくなった」ことは検出できない。`scripts/smoke_test.py` は**登録されている全ツール**を実際の realm に対して実行し、空・不正・エラー応答を失敗として報告する。
+
+```bash
+# KEYCLOAK_URL / KEYCLOAK_CLIENT_ID / KEYCLOAK_CLIENT_SECRET が必要
+uv run python scripts/smoke_test.py
+uv run python scripts/smoke_test.py --only login_stats --traceback
+```
+
+- **読み取り専用**。状態を変更するツール（`reset_password`・`logout_user`・`set_user_enabled`・`reset_passwords_batch`）は名前でスキップし、テストで強制している。レポートに出るのはツール名と状態だけで、応答本文は出さない（realm のデータをログに残さないため）。エラー文もサーバー由来のテキストは伏せる（`--traceback` 使用時のみ手元の端末に全文が出る）。
+- ユーザー名・グループ・IP など realm 固有の引数は `scripts/smoke_probes.py` に書かず、**実行時に取得**する。
+- CI では安価な半分だけを検証する: probe 仕様の無いツールを追加するとビルドが落ちる（`tests/test_smoke_probes.py`）。ツール追加時に「動作をどう確認するか」を必ず決めさせるため。
+- 共有インフラなので既定の同時実行数は 2。
+- `scripts/smoke_harness.py` は KeyCloak 固有の知識を持たないエンジン本体。共有する各サーバーで同一に保つ方針なので、この写しに手を入れるのではなく、エンジン側を直してファイルを同期する。
+
 ## ライセンス
 
 MIT
