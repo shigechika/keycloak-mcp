@@ -66,8 +66,10 @@ class Probe:
 
     args: dict[str, Any] = field(default_factory=dict)
     #: Builds args from a live call, for tools whose input comes from another
-    #: tool's output (e.g. a download key listed by a companion tool). Takes
-    #: precedence over ``args``; raising ``SkipProbe`` reports a SKIP.
+    #: tool's output (e.g. a download key listed by a companion tool). What it
+    #: returns is merged over ``args``, so a probe can pin the bounds it cares
+    #: about and discover only the identifier. Raising ``SkipProbe`` reports a
+    #: SKIP.
     args_factory: Callable[[Caller], Awaitable[dict[str, Any]]] | None = None
     #: Dotted path to the list of rows; when None the longest list is used.
     rows_key: str | None = None
@@ -328,6 +330,14 @@ async def run_probes(
     found"), which is fine for a market-data server and unacceptable for one
     serving personal data — the report is meant to be safe to paste anywhere.
     """
+    if concurrency < 1:
+        # Semaphore(0) parks every probe forever, and the per-probe timeout
+        # cannot save the run because it only starts once the slot is held —
+        # a bounded smoke test that hangs is the one failure mode it must not
+        # have. Negative values raise from the Semaphore itself, after the
+        # caller has already paid for setup.
+        raise ValueError(f"concurrency must be at least 1, got {concurrency}")
+
     semaphore = asyncio.Semaphore(concurrency)
 
     async def one(name: str) -> Result:
@@ -350,12 +360,18 @@ async def run_probes(
             # and blow straight through the configured concurrency bound.
             if probe.args_factory is not None:
                 try:
-                    args = await asyncio.wait_for(probe.args_factory(call), timeout=probe.timeout)
+                    discovered = await asyncio.wait_for(
+                        probe.args_factory(call), timeout=probe.timeout
+                    )
                 except SkipProbe as exc:
                     return Result(name, "SKIP", str(exc), time.monotonic() - started)
                 except Exception as exc:  # noqa: BLE001 - a broken prerequisite is a finding
                     detail = f"args_factory failed: {_describe(exc, redact_details)}"
                     return Result(name, "FAIL", detail[:160], time.monotonic() - started)
+                # Merged, not replaced: a probe that sets both means "these are
+                # the fixed arguments, and this one is discovered". Dropping
+                # ``args`` here would silently lose a bound the author wrote.
+                args = {**probe.args, **discovered}
             else:
                 args = probe.args
             args = resolve_tokens(args, reference, today)

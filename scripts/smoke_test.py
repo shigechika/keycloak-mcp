@@ -198,7 +198,7 @@ def main() -> None:
     parser.add_argument("--output", choices=("md", "json"), default="md")
     # Serial by default: the realm is shared production infrastructure, and a
     # burst of admin API calls is a worse neighbour than a slow smoke test.
-    parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--traceback", action="store_true", help="print full stacks for failing tools")
     args = parser.parse_args()
 
