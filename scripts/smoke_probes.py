@@ -50,7 +50,10 @@ async def _first_username(call: Caller) -> dict[str, Any]:
     payload = await call("search_users", {"query": USER_QUERY, "max_results": 1})
     text = payload if isinstance(payload, str) else str(payload)
     # "Found 1 user(s):\n  <username>  id=<uuid>  name=... enabled=..."
-    match = re.search(r"^\s{2}(\S+)\s+id=", text, re.MULTILINE)
+    # The name runs to the "id=" field rather than to the first space: KeyCloak
+    # permits a space in a username, and a truncated one would be looked up as
+    # a different account (or as nobody).
+    match = re.search(r"^\s{2}(\S.*?)\s+id=", text, re.MULTILINE)
     if not match:
         raise SkipProbe("search_users returned no user to probe with")
     return {"username": match.group(1)}
