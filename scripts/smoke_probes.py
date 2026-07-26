@@ -50,10 +50,12 @@ async def _first_username(call: Caller) -> dict[str, Any]:
     payload = await call("search_users", {"query": USER_QUERY, "max_results": 1})
     text = payload if isinstance(payload, str) else str(payload)
     # "Found 1 user(s):\n  <username>  id=<uuid>  name=... enabled=..."
-    # The name runs to the "id=" field rather than to the first space: KeyCloak
-    # permits a space in a username, and a truncated one would be looked up as
-    # a different account (or as nobody).
-    match = re.search(r"^\s{2}(\S.*?)\s+id=", text, re.MULTILINE)
+    # The name runs to the two-space field separator, not to the first space:
+    # KeyCloak permits a space inside a username, and a truncated one would be
+    # looked up as a different account (or as nobody). Anchoring on the
+    # separator rather than on a bare "id=" also keeps a username that happens
+    # to contain that substring intact.
+    match = re.search(r"^ {2}(\S.*?) {2}id=", text, re.MULTILINE)
     if not match:
         raise SkipProbe("search_users returned no user to probe with")
     return {"username": match.group(1)}
@@ -65,7 +67,8 @@ async def _first_group(call: Caller) -> dict[str, Any]:
     payload = await call("list_user_groups", args)
     text = payload if isinstance(payload, str) else str(payload)
     # "Groups for <user> (N):\n  <group>  path=..."
-    match = re.search(r"^\s{2}(\S+)", text, re.MULTILINE)
+    # Same two-space separator as above: a group name may contain a space.
+    match = re.search(r"^ {2}(\S.*?) {2}path=", text, re.MULTILINE)
     if "belongs to no groups" in text or not match:
         raise SkipProbe("no group membership available to probe with")
     return {"group_name": match.group(1)}

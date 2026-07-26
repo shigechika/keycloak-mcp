@@ -221,6 +221,19 @@ def test_no_realm_identifying_arguments_are_hardcoded():
         "Discover them at run time (args_factory); this repository is public."
     )
 
+    # The check above reads the specs as data, which an args_factory sidesteps:
+    # a factory returning {"username": "some-real-account"} would satisfy it
+    # while committing the very literal it exists to prevent. So read the file
+    # as text too and refuse one of these keys paired with a string literal
+    # anywhere in it — a discovered value is an expression (match.group(1)),
+    # never a quote.
+    spec_source = (Path(__file__).resolve().parent.parent / "scripts" / "smoke_probes.py").read_text(encoding="utf-8")
+    literals = sorted(key for key in IDENTIFIER_ARGS if re.search(rf'["\']{key}["\']\s*:\s*["\']', spec_source))
+    assert not literals, (
+        f"realm-identifying arguments written as literals in smoke_probes.py: {literals}. "
+        "Return them from a discovery call instead of writing the value down."
+    )
+
 
 def test_no_site_specific_literals_in_specs():
     """This repository is public: probes must not name the realm they run against.
