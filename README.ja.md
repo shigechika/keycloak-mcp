@@ -81,7 +81,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 
 | ツール | 説明 |
 |------|------|
-| `health_check` | 稼働中のサーババージョンを報告し、KeyCloak バックエンドへの到達性とサービスアカウントの認証可否を確認する。軽量（トークン取得1回のみ・ユーザ／イベント／セッションのスキャンは行わない）。`status`（healthy / degraded / error）、`auth`（ok / error / missing-env）、設定済み URL／Realm を含む固定キーの dict を返す。 |
+| `health_check` | 稼働中のサーババージョンを報告し、KeyCloak バックエンドへの到達性とサービスアカウントの認証可否を確認する。軽量（トークン取得1回のみ・ユーザ／イベント／セッションのスキャンは行わない）。`status`、`auth`、設定済み URL／Realm を含む固定キーの dict を返す。各フィールドが取りうる値はツール自身の description が列挙しており、列挙はそこ1か所にのみ置く。 |
 | `daily_brief` | 朝のワンショット健全性チェック。ログイン統計・ブルートフォース IP・アクティブセッション・パスワード更新・管理者操作を1つの Markdown サマリーにまとめる。`ip_failure_threshold`（既定 50）件以上の失敗 IP は **WARNING**、API エラーは **CRITICAL** として表示。`since_hours` で遡及時間を指定（既定 18 h）。 |
 
 ## インストール

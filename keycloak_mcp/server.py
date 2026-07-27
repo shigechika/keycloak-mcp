@@ -219,6 +219,10 @@ def health_check() -> dict:
     unset), ``realm`` (configured realm), ``keycloak_version`` (None — not exposed
     by a cheap call), and ``auth`` (ok / error / missing-env). On a degraded or
     error result, ``detail`` carries the reason.
+
+    This description is the only place those value sets are written down. The
+    READMEs used to repeat them, which is three copies to keep in step and two
+    that an LLM never reads — it is handed this text.
     """
     from keycloak_mcp import __version__
 
