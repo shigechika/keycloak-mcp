@@ -46,7 +46,12 @@ dev = [
     # (incl. the token endpoint in conftest) fail to match and every request
     # raises respx AllMockedAssertionError. 0.22.0 added httpx 0.28 support.
     "respx>=0.22.0",
-    "ruff",
+    # Pinned, unlike the other dev tools here: uv.lock is not tracked in this
+    # repository, so CI resolves ruff fresh on every run and a release that
+    # widens a selected rule family or changes formatter output would turn the
+    # lint gate red on a pull request that changed nothing. Dependabot bumps
+    # this as a visible PR instead.
+    "ruff==0.16.0",
 ]
 
 [tool.setuptools]
