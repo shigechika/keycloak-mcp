@@ -11,7 +11,7 @@
 | `version` | パッケージのバージョン |
 | `keycloak_url` | 設定された URL（未設定なら空文字列） |
 | `realm` | 設定されたレルム（未設定なら空文字列） |
-| `keycloak_version` | トークン取得に成功するまでは `null` |
+| `keycloak_version` | 常に `null`（軽量な呼び出しでは取得しない） |
 | `auth` | `unknown` / `ok` / `missing-env` / `error` |
 
 `detail` は `degraded` または `error` のときだけ追加され、理由（環境変数の欠落、
@@ -37,21 +37,21 @@
 | `get_user_credentials(username)` | 設定済みの認証情報の種類。`otp` があれば TOTP/HOTP 設定済み |
 | `get_totp_users(max_users=0)` | レルム全体の TOTP 導入率。N+1（ユーザーごとに1呼び出し）。`max_users` または `KEYCLOAK_MAX_USERS` で上限 |
 | `list_user_groups(username)` | ユーザーが所属するグループ |
-| `list_users_by_group(group)` | グループのメンバー |
+| `list_users_by_group(group_name, max_results=100)` | グループのメンバー |
 | `get_brute_force_status(username)` | ユーザーがブルートフォース検知によりロック中か |
 | `get_realm_security_defenses()` | ブルートフォース対策の方針と閾値、パスワードポリシー、ブラウザセキュリティヘッダー |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | 送信元 IP 別の失敗数ランキング |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | 1 IP の網羅的な調査（構造化 JSON） |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | `window_seconds` 内に `threshold` 回を超えてログインしたユーザー |
-| `get_events(event_type, username, client_id, ip_address, date_from, date_to)` | 絞り込みイベント検索。ユーザー名は内部でユーザー ID に解決される |
+| `get_events(event_type, username, client_id, ip_address, date_from, date_to, max_results=50)` | 絞り込みイベント検索。ユーザー名は内部でユーザー ID に解決される |
 | `get_login_stats(date_from, date_to)` | 成功/失敗の総数（全件ページング） |
 | `get_login_stats_by_hour(date_from, date_to)` | 時間帯別のログイン数（ローカル時刻） |
 | `get_login_stats_by_client(date_from, date_to)` | クライアント（SP）別のログイン数 |
-| `get_password_update_events(date_from, date_to)` | `UPDATE_PASSWORD` の履歴 |
-| `get_admin_events(operation_types, resource_types, resource_path, date_from, date_to, max_repr=500)` | 管理操作による変更。`get_events` には現れない |
-| `get_user_attribute_history(username, date_from, date_to, max_repr=500)` | 1ユーザーに絞った管理イベント |
+| `get_password_update_events(date_from, date_to, max_results=100)` | `UPDATE_PASSWORD` の履歴 |
+| `get_admin_events(operation_types, resource_types, resource_path, date_from, date_to, max_results=50, max_repr=500)` | 管理操作による変更。`get_events` には現れない |
+| `get_user_attribute_history(username, date_from, date_to, max_results=100, max_repr=500)` | 1ユーザーに絞った管理イベント |
 | `get_session_stats()` | クライアント別のアクティブセッション数 |
-| `get_client_sessions(client_id)` | 1クライアントのアクティブセッション |
+| `get_client_sessions(client_id, max_results=100)` | 1クライアントのアクティブセッション |
 | `list_clients()` | レルムの SAML / OIDC クライアント |
 | `get_realm_roles()` | レルムレベルのロール |
 | `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・セッション・パスワード更新・管理イベント |

@@ -11,7 +11,7 @@ Seven keys are present on every call:
 | `version` | Package version |
 | `keycloak_url` | Configured URL (empty string when unset) |
 | `realm` | Configured realm (empty string when unset) |
-| `keycloak_version` | `null` until a token request succeeds |
+| `keycloak_version` | Always `null` — not exposed by a cheap call |
 | `auth` | `unknown` / `ok` / `missing-env` / `error` |
 
 `detail` is added only on `degraded` or `error`, with the reason: a missing
@@ -39,21 +39,21 @@ timeout.
 | `get_user_credentials(username)` | Configured credential types; an `otp` entry means TOTP/HOTP is set up |
 | `get_totp_users(max_users=0)` | Realm-wide TOTP adoption. N+1 (one call per user); bounded by `max_users` or `KEYCLOAK_MAX_USERS` |
 | `list_user_groups(username)` | Groups a user belongs to |
-| `list_users_by_group(group)` | Members of a group |
+| `list_users_by_group(group_name, max_results=100)` | Members of a group |
 | `get_brute_force_status(username)` | Whether a user is currently locked by brute-force detection |
 | `get_realm_security_defenses()` | Brute-force policy and thresholds, password policy, browser security headers |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | Failure counts ranked by source IP |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | Exhaustive per-IP investigation (structured JSON) |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | Users logging in faster than `threshold` per `window_seconds` |
-| `get_events(event_type, username, client_id, ip_address, date_from, date_to)` | Filtered event search; username resolved to user ID internally |
+| `get_events(event_type, username, client_id, ip_address, date_from, date_to, max_results=50)` | Filtered event search; username resolved to user ID internally |
 | `get_login_stats(date_from, date_to)` | Success/failure totals, fully paginated |
 | `get_login_stats_by_hour(date_from, date_to)` | Logins bucketed by hour of day, local time |
 | `get_login_stats_by_client(date_from, date_to)` | Logins bucketed by client (SP) |
-| `get_password_update_events(date_from, date_to)` | `UPDATE_PASSWORD` history |
-| `get_admin_events(operation_types, resource_types, resource_path, date_from, date_to, max_repr=500)` | Admin-driven changes; `get_events` never sees these |
-| `get_user_attribute_history(username, date_from, date_to, max_repr=500)` | Admin events scoped to one user |
+| `get_password_update_events(date_from, date_to, max_results=100)` | `UPDATE_PASSWORD` history |
+| `get_admin_events(operation_types, resource_types, resource_path, date_from, date_to, max_results=50, max_repr=500)` | Admin-driven changes; `get_events` never sees these |
+| `get_user_attribute_history(username, date_from, date_to, max_results=100, max_repr=500)` | Admin events scoped to one user |
 | `get_session_stats()` | Active session count per client |
-| `get_client_sessions(client_id)` | Active sessions for one client |
+| `get_client_sessions(client_id, max_results=100)` | Active sessions for one client |
 | `list_clients()` | SAML and OIDC clients in the realm |
 | `get_realm_roles()` | Realm-level roles |
 | `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, sessions, password updates, admin events |
