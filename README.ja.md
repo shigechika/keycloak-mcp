@@ -1,5 +1,3 @@
-<!-- mcp-name: io.github.shigechika/keycloak-mcp -->
-
 # keycloak-mcp
 
 [English](README.md) | 日本語
