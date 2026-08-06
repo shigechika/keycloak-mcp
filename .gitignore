@@ -13,3 +13,4 @@ htmlcov/
 .mcp.json
 uv.lock
 sites.ini
+site/
