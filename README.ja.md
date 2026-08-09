@@ -4,6 +4,8 @@
 
 [KeyCloak](https://www.keycloak.org/) Admin REST API のための MCP（Model Context Protocol）サーバ。
 
+ドキュメント: <https://shigechika.github.io/keycloak-mcp/ja/>
+
 Service Account（**Client Credentials Grant**）で認証するので、人間のユーザのパスワードや TOTP は一切不要。ユーザセッションも作らず userinfo も叩かないので Infinispan にも優しい作り。
 
 ## 機能

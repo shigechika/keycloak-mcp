@@ -6,6 +6,8 @@ English | [日本語](README.ja.md)
 
 An MCP (Model Context Protocol) server for the [KeyCloak](https://www.keycloak.org/) Admin REST API.
 
+Documentation: <https://shigechika.github.io/keycloak-mcp/>
+
 Authenticates via a Service Account (**Client Credentials Grant**), so no human password or TOTP is involved. Also Infinispan-safe — it never creates user sessions and never hits the userinfo endpoint.
 
 ## Features
