@@ -75,12 +75,15 @@ reviewer also receives.
 - Suggestions to hand-build an MCP content envelope
   (`{"content": [...], "isError": ...}`) inside a tool handler. FastMCP
   wraps returned values already.
-- Anything CI already fails on, restated as a review comment. `ruff
-  check .` and `ruff format --check .` both gate this repository, and
-  `tests/test_smoke_probes.py` already fails the build for a registered
-  tool with no probe spec. This does **not** extend to that file's
-  realm-specific-literal assertion — a leak into a public repository is
-  worth catching twice.
+- A finding that does nothing but restate one of the two gates CI
+  already enforces: `ruff check .` and `ruff format --check .` both gate this
+  repository, and `tests/test_smoke_probes.py`
+  already fails the build for a registered tool with no probe spec.
+  This covers those two and nothing further. It never applies to a
+  rule listed under **Always blocking** above, even when the same
+  diff happens to fail a test as well, and it does not cover that
+  same file's realm-specific-literal assertion — a leak
+  reaching a public repository is worth catching twice.
 - Suggestions to *replace* `release-please.yml`'s
   `secrets.RELEASE_PLEASE_TOKEN` with `GITHUB_TOKEN`. Preferring the
   dedicated token is deliberate: a `GITHUB_TOKEN`-authored tag or
