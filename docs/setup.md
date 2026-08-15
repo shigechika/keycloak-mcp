@@ -100,6 +100,10 @@ The plugin launches `uvx keycloak-mcp` and reads the same [environment
 variables](#environment-variables) as every other transport; export them
 before starting Claude Code.
 
+`uvx` must be on the `PATH` of the process that runs Claude Code — a login
+shell usually has it, but a GUI-launched app may not; install
+[uv](https://docs.astral.sh/uv/) system-wide if the plugin fails to start.
+
 ### Claude Code (manual)
 
 `.mcp.json`:

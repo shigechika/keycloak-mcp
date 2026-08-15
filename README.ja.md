@@ -194,6 +194,11 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
 Claude Code を起動する前に export しておいてください。`KEYCLOAK_REALM` は未設定なら
 `master`、`KEYCLOAK_SITES_INI` は未設定のままで構いません。
 
+プラグインは `uvx` を起動するため、Claude Code を実行するプロセスの `PATH` に
+`uvx` が通っている必要があります。ログインシェルなら通常問題ありませんが、
+GUI から起動した場合は通っていないことがあります。プラグインが起動しない場合は
+[uv](https://docs.astral.sh/uv/) をシステム全体にインストールしてください。
+
 ### Claude Code（手動）
 
 `.mcp.json` に追加:
