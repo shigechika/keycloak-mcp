@@ -85,7 +85,19 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
 
 ## MCP クライアントへの登録
 
-### Claude Code
+### Claude Code（プラグイン）
+
+このリポジトリはプラグイン 1 個のマーケットプレイスも兼ねています。
+
+```
+/plugin marketplace add shigechika/keycloak-mcp
+/plugin install keycloak-mcp@keycloak-mcp
+```
+
+プラグインは `uvx keycloak-mcp` を起動し、[環境変数](#環境変数)と同じものを読みます。
+Claude Code を起動する前に export しておいてください。
+
+### Claude Code（手動）
 
 `.mcp.json`:
 
