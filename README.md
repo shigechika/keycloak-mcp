@@ -198,6 +198,10 @@ described in [Configuration](#configuration); export them before starting Claude
 Code. `KEYCLOAK_REALM` falls back to `master` and `KEYCLOAK_SITES_INI` may stay
 unset.
 
+`uvx` must be on the `PATH` of the process that runs Claude Code — a login
+shell usually has it, but a GUI-launched app may not; install
+[uv](https://docs.astral.sh/uv/) system-wide if the plugin fails to start.
+
 ### Claude Code (manual)
 
 In `.mcp.json`:
