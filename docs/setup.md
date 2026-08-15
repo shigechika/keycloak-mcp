@@ -87,7 +87,20 @@ put specific ranges before broad ones.
 
 ## Register with an MCP client
 
-### Claude Code
+### Claude Code (plugin)
+
+This repository doubles as a single-plugin marketplace:
+
+```
+/plugin marketplace add shigechika/keycloak-mcp
+/plugin install keycloak-mcp@keycloak-mcp
+```
+
+The plugin launches `uvx keycloak-mcp` and reads the same [environment
+variables](#environment-variables) as every other transport; export them
+before starting Claude Code.
+
+### Claude Code (manual)
 
 `.mcp.json`:
 

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "keycloak-mcp",
+  "displayName": "KeyCloak MCP",
+  "description": "KeyCloak Admin REST API for Claude Code, through a Service Account. Investigate accounts, group membership, sessions, MFA enrolment, brute-force lockouts, and login/admin events, and get a one-shot daily_brief health check. Runs read-only unless the Service Account is granted manage-users. Requires KEYCLOAK_URL, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET.",
+  "author": {
+    "name": "AIKAWA Shigechika",
+    "url": "https://github.com/shigechika"
+  },
+  "homepage": "https://shigechika.github.io/keycloak-mcp/",
+  "repository": "https://github.com/shigechika/keycloak-mcp",
+  "license": "MIT",
+  "keywords": [
+    "keycloak",
+    "identity",
+    "iam",
+    "sso",
+    "authentication",
+    "audit",
+    "security"
+  ]
+}

@@ -127,6 +127,22 @@ pip install -e .
 2. **Client authentication** と **Service account roles** をオンにする。
 3. Realm ロールとして `view-users` / `view-events` / `view-clients` を付与。パスワードリセットも使うなら `manage-users` も追加。
 
+### 状態を変えるツール
+
+状態を変えるのは次の 4 つだけです。ほかはすべて読み取りです。
+
+| ツール | Admin API |
+|---|---|
+| `reset_password` | `PUT /users/{id}/reset-password` |
+| `reset_passwords_batch` | 同じ呼び出しを CSV の行数だけ繰り返す |
+| `set_user_enabled` | `enabled` を変えて `PUT /users/{id}` |
+| `logout_user` | `POST /users/{id}/logout` |
+
+4 つとも Service Account の `manage-users` が要ります。**このロールを付けなければ
+読み取り専用**になり、上記 4 つだけが `403` で失敗して残りのツールはそのまま動きます。
+realm を変更する権限を一切与えずに調査だけ任せられる，ということです。アカウント復旧や
+封じ込めまで行う場合にのみ `manage-users` を付けてください。
+
 ### 設定の確認
 
 環境変数を設定したら、MCP クライアントに組み込む前に `--check` で認証が通るか確認する:
@@ -164,7 +180,21 @@ ipv4 = 10.0.0.0/8, 172.16.0.0/12
 
 ## 使い方
 
-### Claude Code
+### Claude Code（プラグイン）
+
+このリポジトリはプラグイン 1 個のマーケットプレイスも兼ねているので、Claude Code から
+そのまま導入できます。
+
+```
+/plugin marketplace add shigechika/keycloak-mcp
+/plugin install keycloak-mcp@keycloak-mcp
+```
+
+プラグインは `uvx keycloak-mcp` を起動し、[設定](#設定)と同じ環境変数を読みます。
+Claude Code を起動する前に export しておいてください。`KEYCLOAK_REALM` は未設定なら
+`master`、`KEYCLOAK_SITES_INI` は未設定のままで構いません。
+
+### Claude Code（手動）
 
 `.mcp.json` に追加:
 

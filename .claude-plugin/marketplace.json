@@ -1,0 +1,17 @@
+{
+  "name": "keycloak-mcp",
+  "description": "KeyCloak MCP server, packaged as a Claude Code plugin.",
+  "owner": {
+    "name": "AIKAWA Shigechika",
+    "url": "https://github.com/shigechika"
+  },
+  "plugins": [
+    {
+      "name": "keycloak-mcp",
+      "source": "./plugin",
+      "description": "KeyCloak Admin REST API for Claude Code, through a Service Account. Investigate accounts, group membership, sessions, MFA enrolment, brute-force lockouts, and login/admin events, and get a one-shot daily_brief health check. Runs read-only unless the Service Account is granted manage-users.",
+      "category": "security",
+      "homepage": "https://shigechika.github.io/keycloak-mcp/"
+    }
+  ]
+}
