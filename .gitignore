@@ -11,6 +11,8 @@ htmlcov/
 .DS_Store
 .claude/
 .mcp.json
+# The plugin's copy is a template holding only ${VAR} placeholders -- no secrets.
+!plugin/.mcp.json
 uv.lock
 sites.ini
 site/

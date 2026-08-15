@@ -129,6 +129,23 @@ pip install -e .
 2. Turn on **Client authentication** and **Service account roles**.
 3. Give it `view-users`, `view-events`, `view-clients`, and — only if you need password reset — `manage-users`.
 
+### Write operations
+
+Four tools change state. Everything else only reads.
+
+| Tool | Admin API call |
+|---|---|
+| `reset_password` | `PUT /users/{id}/reset-password` |
+| `reset_passwords_batch` | the same call, once per CSV row |
+| `set_user_enabled` | `PUT /users/{id}` with `enabled` toggled |
+| `logout_user` | `POST /users/{id}/logout` |
+
+All four need `manage-users` on the Service Account. **Leave that role off and the
+server is read-only**: those four tools fail with `403` and every other tool keeps
+working, so a realm can be handed to Claude for investigation without granting any
+ability to modify it. Grant `manage-users` only when account recovery or
+containment is part of the job.
+
 ### Verify your setup
 
 After setting the environment variables, run `--check` to confirm authentication works before wiring it into an MCP client:
@@ -166,7 +183,22 @@ One site per `[section]`. `name` is the display label (falls back to the section
 
 ## Usage
 
-### Claude Code
+### Claude Code (plugin)
+
+This repository doubles as a single-plugin marketplace, so Claude Code can install
+the server for you:
+
+```
+/plugin marketplace add shigechika/keycloak-mcp
+/plugin install keycloak-mcp@keycloak-mcp
+```
+
+The plugin launches `uvx keycloak-mcp` and reads the same environment variables
+described in [Configuration](#configuration); export them before starting Claude
+Code. `KEYCLOAK_REALM` falls back to `master` and `KEYCLOAK_SITES_INI` may stay
+unset.
+
+### Claude Code (manual)
 
 In `.mcp.json`:
 

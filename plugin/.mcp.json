@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "keycloak-mcp": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["keycloak-mcp"],
+      "env": {
+        "KEYCLOAK_URL": "${KEYCLOAK_URL}",
+        "KEYCLOAK_REALM": "${KEYCLOAK_REALM:-master}",
+        "KEYCLOAK_CLIENT_ID": "${KEYCLOAK_CLIENT_ID}",
+        "KEYCLOAK_CLIENT_SECRET": "${KEYCLOAK_CLIENT_SECRET}",
+        "KEYCLOAK_SITES_INI": "${KEYCLOAK_SITES_INI:-}"
+      }
+    }
+  }
+}
