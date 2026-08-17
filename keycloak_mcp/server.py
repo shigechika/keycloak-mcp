@@ -49,6 +49,16 @@ def _normalize_ip(ip: str) -> str:
         return ip
 
 
+def _split_csv(raw: str) -> list[str]:
+    """Split a comma-separated string into stripped, non-empty parts.
+
+    Shared by every comma-separated-list argument/env var in this module
+    (event/operation/resource type filters, the attribute whitelist); casing
+    and empty-list fallbacks are the caller's concern, not this helper's.
+    """
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def _default_date_from(date_from: str) -> str | None:
     """Return date_from if given; otherwise compute a default lookback window.
 
@@ -128,8 +138,7 @@ def _user_attribute_whitelist() -> list[str]:
     attributes, other site-specific fields, …) out of LLM context by default; only
     realm-specific deployments that need one attribute surfaced (e.g. an enrollment-status
     field for account lifecycle decisions) should set this."""
-    raw = os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "")
-    return [key.strip() for key in raw.split(",") if key.strip()]
+    return _split_csv(os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", ""))
 
 
 def _with_warning(text: str, truncated: bool) -> str:
@@ -329,14 +338,28 @@ def get_user(username: str) -> str:
     ]
     whitelist = _user_attribute_whitelist()
     if whitelist:
-        full = _kc().get_user_by_id(u["id"])
-        attributes = full.get("attributes") or {}
-        for key in whitelist:
-            if key not in attributes:
-                continue
-            values = attributes[key]
-            value = ", ".join(values) if isinstance(values, list) else str(values)
-            lines.append(f"Attribute[{key}]: {value}")
+        try:
+            full = _kc().get_user_by_id(u["id"])
+        except Exception as e:  # noqa: BLE001 — never let the extra by-ID lookup crash get_user
+            # Covers the TOCTOU window where the user is deleted between the username
+            # search above and this by-ID fetch, and permission setups where GET
+            # /users/{id} is denied even though the search endpoint is allowed. Mirrors
+            # health_check's redaction: report the failure type/status, not the httpx
+            # exception text (which embeds the full internal admin API URL).
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            detail = f"{type(e).__name__} {status}" if status else type(e).__name__
+            lines.append(f"Attributes: unavailable ({detail})")
+        else:
+            attributes = full.get("attributes") or {}
+            for key in whitelist:
+                if key not in attributes:
+                    continue
+                values = attributes[key]
+                # Attribute values are normally list[str], but attributes written outside
+                # the Admin API (LDAP sync, broker mappers, direct DB writes) aren't
+                # guaranteed to be — str() each element rather than assuming.
+                value = ", ".join(str(v) for v in values) if isinstance(values, list) else str(values)
+                lines.append(f"Attribute[{key}]: {value}")
     return "\n".join(lines)
 
 
@@ -931,7 +954,7 @@ def get_ip_activity(
             affect summary/users/clients.
     """
     resolved_date_from = _default_date_from(date_from)
-    types = [t.strip() for t in event_types.split(",") if t.strip()]
+    types = _split_csv(event_types)
     error = None if types else f"event_types must contain at least one event type, got {event_types!r}"
 
     all_events: list[dict] = []
@@ -1237,8 +1260,8 @@ def get_admin_events(
         max_results: Maximum results (default 50).
         max_repr: Max chars of the representation field. 0 = omit, -1 = full.
     """
-    op_list = [s.strip() for s in operation_types.split(",") if s.strip()] or None
-    rt_list = [s.strip() for s in resource_types.split(",") if s.strip()] or None
+    op_list = _split_csv(operation_types) or None
+    rt_list = _split_csv(resource_types) or None
     events = _kc().get_admin_events(
         operation_types=op_list,
         resource_types=rt_list,

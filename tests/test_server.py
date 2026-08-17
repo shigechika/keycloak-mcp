@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from unittest.mock import ANY, patch
 
+import httpx
+
 from keycloak_mcp import server
 
 
@@ -211,6 +213,48 @@ class TestGetUser:
         mock.return_value.get_user_by_id.return_value = {**SAMPLE_USER, "attributes": {}}
         result = server.get_user("alice@example.com")
         assert "Attribute[" not in result
+
+    @patch.object(server, "_kc")
+    def test_by_id_lookup_404_does_not_crash_or_leak_url(self, mock, monkeypatch):
+        """Covers the TOCTOU window: the user is deleted between the username search
+        above and this by-ID fetch. Must degrade gracefully, not raise — and the
+        redaction must survive even a real httpx exception (whose default __str__
+        embeds the full request URL), not just a hand-rolled fake."""
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "custom_key")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        url = "https://internal-sso.example.corp/admin/realms/campus/users/user-uuid-1"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(404, request=request)
+        mock.return_value.get_user_by_id.side_effect = httpx.HTTPStatusError(
+            f"Client error '404' for url '{url}'", request=request, response=response
+        )
+        result = server.get_user("alice@example.com")
+        assert "Attributes: unavailable (HTTPStatusError 404)" in result
+        assert url not in result
+        assert "internal-sso" not in result
+        # Base fields (fetched successfully before the failing by-ID lookup) still show.
+        assert "alice@example.com" in result
+
+    @patch.object(server, "_kc")
+    def test_by_id_lookup_non_http_failure_does_not_crash(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "custom_key")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.side_effect = httpx.ConnectError("connection refused")
+        result = server.get_user("alice@example.com")
+        assert "Attributes: unavailable (ConnectError)" in result
+
+    @patch.object(server, "_kc")
+    def test_attribute_value_non_string_list_elements(self, mock, monkeypatch):
+        """Attributes written outside the Admin API (LDAP sync, broker mappers) aren't
+        guaranteed to be list[str] — a non-string element must not crash the join."""
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "custom_key")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.return_value = {
+            **SAMPLE_USER,
+            "attributes": {"custom_key": [None, 1, "x"]},
+        }
+        result = server.get_user("alice@example.com")
+        assert "Attribute[custom_key]: None, 1, x" in result
 
 
 class TestGetUserCredentials:
