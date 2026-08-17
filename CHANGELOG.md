@@ -198,7 +198,7 @@ Keep-a-Changelog style.
     (USER / CLIENT / ROLE / GROUP / ...), `resource_path`, and date range.
   - `get_user_attribute_history`: per-user helper that scopes the query to
     `users/{userId}` with UPDATE / ACTION operations. Intended for tracking
-    admin-driven attribute changes (e.g. custom `temp_password` fields) that
+    admin-driven attribute changes (e.g. custom `provisioning_flag` fields) that
     do **not** surface in `get_events` because they are not `UPDATE_PROFILE`
     or `UPDATE_PASSWORD` events.
   Output shows `time / operationType / resourceType / resourcePath / admin
@@ -211,7 +211,7 @@ Keep-a-Changelog style.
 ### Changed
 - Admin event `representation` truncation is now configurable via `max_repr`
   on both admin-event tools. Default raised from 200 → 500 chars (long user
-  representations were hiding custom attributes like `temp_password`).
+  representations were hiding custom attributes like `provisioning_flag`).
   Semantics: `max_repr > 0` truncates to N chars, `== 0` omits the
   representation, `< 0` includes it in full.
 

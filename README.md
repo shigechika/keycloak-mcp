@@ -66,7 +66,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | Tool | Description |
 |------|-------------|
 | `get_admin_events` | Filter by operation (CREATE / UPDATE / DELETE / ACTION), resource type (USER / CLIENT / ROLE / GROUP / …), resource path, and date range |
-| `get_user_attribute_history` | UPDATE/ACTION events scoped to one user — handy for tracking when a custom attribute (e.g. `temp_password`) was written by an automated pipeline |
+| `get_user_attribute_history` | UPDATE/ACTION events scoped to one user — handy for tracking when a custom attribute (e.g. `provisioning_flag`) was written by an automated pipeline |
 
 Both tools accept `max_repr` to control the representation payload: positive = truncate to N chars (default 500), `0` = omit, negative = include in full.
 

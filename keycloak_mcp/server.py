@@ -124,10 +124,10 @@ def _user_attribute_whitelist() -> list[str]:
     KEYCLOAK_USER_ATTRIBUTE_WHITELIST (comma-separated attribute keys). Empty/unset by
     default, so get_user's output — and the extra by-ID lookup needed to see attributes at
     all (see get_user_by_id) — is unchanged unless an operator opts specific keys in. This
-    keeps arbitrary custom attributes (temp_password, SSO/Shibboleth extension attributes,
-    site-specific fields, …) out of LLM context by default; only realm-specific deployments
-    that need one attribute surfaced (e.g. an enrollment-status field for account lifecycle
-    decisions) should set this."""
+    keeps arbitrary custom attributes (internal provisioning state, SSO/Shibboleth extension
+    attributes, other site-specific fields, …) out of LLM context by default; only
+    realm-specific deployments that need one attribute surfaced (e.g. an enrollment-status
+    field for account lifecycle decisions) should set this."""
     raw = os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "")
     return [key.strip() for key in raw.split(",") if key.strip()]
 
@@ -1223,7 +1223,7 @@ def get_admin_events(
     """Get KeyCloak admin events (changes performed via the Admin REST API).
 
     Admin events record operations performed by service accounts or admin users
-    — e.g. custom user attribute updates (``temp_password``), role / group
+    — e.g. custom user attribute updates (``provisioning_flag``), role / group
     assignments, client configuration changes. These are distinct from user
     events (login / password change). Use this when ``UPDATE_PROFILE`` in
     ``get_events`` is empty but an attribute is known to have changed.
@@ -1268,7 +1268,7 @@ def get_user_attribute_history(
 
     Queries admin events scoped to ``users/{userId}`` with UPDATE / ACTION
     operations. Intended for tracking custom attribute changes such as
-    ``temp_password`` which are written by admin API and do **not** surface in
+    ``provisioning_flag`` which are written by admin API and do **not** surface in
     ``get_events`` (which only shows user-driven events like LOGIN /
     UPDATE_PASSWORD).
 

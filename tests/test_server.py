@@ -1229,7 +1229,7 @@ SAMPLE_ADMIN_EVENT = {
         "userId": "admin-uuid",
         "ipAddress": "10.0.0.1",
     },
-    "representation": '{"attributes":{"temp_password":["xxx"]}}',
+    "representation": '{"attributes":{"provisioning_flag":["xxx"]}}',
 }
 
 
@@ -1305,7 +1305,7 @@ class TestGetUserAttributeHistory:
         mock.return_value.get_admin_events.return_value = [SAMPLE_ADMIN_EVENT]
         result = server.get_user_attribute_history("alice@example.com")
         assert "Attribute history for alice@example.com (1)" in result
-        assert "temp_password" in result
+        assert "provisioning_flag" in result
         # Verify the query was scoped to this user
         call = mock.return_value.get_admin_events.call_args
         assert call.kwargs["resource_path"] == "users/user-uuid-1"

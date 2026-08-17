@@ -64,7 +64,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | ツール | 説明 |
 |------|------|
 | `get_admin_events` | 操作種別（CREATE / UPDATE / DELETE / ACTION）、リソース種別（USER / CLIENT / ROLE / GROUP / …）、リソースパス、日付範囲でフィルタ |
-| `get_user_attribute_history` | 特定ユーザに対する UPDATE/ACTION イベントを抽出。プロビジョニング処理が `temp_password` のようなカスタム属性をいつ書き込んだかを追うのに便利 |
+| `get_user_attribute_history` | 特定ユーザに対する UPDATE/ACTION イベントを抽出。プロビジョニング処理が `provisioning_flag` のようなカスタム属性をいつ書き込んだかを追うのに便利 |
 
 どちらも `max_repr` で representation ペイロードを制御できる: 正の数 = N 文字で切り詰め（デフォルト 500）、`0` = 省略、負の数 = 全文表示。
 

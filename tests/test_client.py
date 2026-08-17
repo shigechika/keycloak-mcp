@@ -125,7 +125,7 @@ class TestSetUserEnabled:
             "id": "user-uuid-1",
             "username": "alice@example.com",
             "enabled": True,
-            "attributes": {"temp_password": ["x"], "sso_ext": ["y"]},
+            "attributes": {"provisioning_flag": ["x"], "sso_ext": ["y"]},
         }
         mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(200, json=rep))
         put_route = mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(204))
@@ -134,7 +134,7 @@ class TestSetUserEnabled:
         sent = json.loads(put_route.calls.last.request.content)
         assert sent["enabled"] is False
         # Custom attributes must survive the toggle, not be dropped.
-        assert sent["attributes"] == {"temp_password": ["x"], "sso_ext": ["y"]}
+        assert sent["attributes"] == {"provisioning_flag": ["x"], "sso_ext": ["y"]}
 
 
 class TestGetUserGroups:
@@ -336,7 +336,7 @@ class TestGetAdminEvents:
                 "resourceType": "USER",
                 "resourcePath": "users/user-uuid-1",
                 "authDetails": {"userId": "admin-uuid", "ipAddress": "10.0.0.1"},
-                "representation": '{"attributes":{"temp_password":["xxx"]}}',
+                "representation": '{"attributes":{"provisioning_flag":["xxx"]}}',
             }
         ]
         route = mock_api.get(f"{ADMIN_BASE}/admin-events").mock(return_value=httpx.Response(200, json=events))

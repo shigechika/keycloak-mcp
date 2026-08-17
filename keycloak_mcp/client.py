@@ -229,7 +229,7 @@ class KeyCloakClient:
         compromised or decommissioned user.
 
         Fetches the current representation and toggles only ``enabled`` before
-        the PUT, so custom attributes (temp_password, SSO / Shibboleth
+        the PUT, so custom attributes (provisioning_flag, SSO / Shibboleth
         extension attributes, …) are preserved rather than dropped by a
         partial update. Returns the PUT status code.
         """
@@ -351,7 +351,7 @@ class KeyCloakClient:
 
         Admin events are separate from user events. They record changes made via
         the Admin REST API, such as user attribute updates (e.g. custom
-        ``temp_password``), role assignments, client config changes, etc.
+        ``provisioning_flag``), role assignments, client config changes, etc.
 
         :param operation_types: Filter by operation (CREATE, UPDATE, DELETE, ACTION).
         :param resource_types: Filter by resource (USER, CLIENT, ROLE, GROUP, etc.).
