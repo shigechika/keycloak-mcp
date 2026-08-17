@@ -79,7 +79,7 @@ KeyCloak の「representation」ペイロード（変更されたオブジェク
 ログアウト・パスワード変更。管理者が行った操作や、サービスアカウントがカスタム
 属性を書き込む操作はここには一切現れません。それを見るのが `get_admin_events`
 です。`get_user_attribute_history` は `get_admin_events` を1ユーザーに絞った
-もので、自動化パイプラインが `temp_password` のような属性を最後に書き込んだ
+もので、自動化パイプラインが `provisioning_flag` のような属性を最後に書き込んだ
 のがいつかを確認するのに便利です。
 
 ## CLI

@@ -66,7 +66,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | Tool | Description |
 |------|-------------|
 | `get_admin_events` | Filter by operation (CREATE / UPDATE / DELETE / ACTION), resource type (USER / CLIENT / ROLE / GROUP / …), resource path, and date range |
-| `get_user_attribute_history` | UPDATE/ACTION events scoped to one user — handy for tracking when a custom attribute (e.g. `temp_password`) was written by an automated pipeline |
+| `get_user_attribute_history` | UPDATE/ACTION events scoped to one user — handy for tracking when a custom attribute (e.g. `provisioning_flag`) was written by an automated pipeline |
 
 Both tools accept `max_repr` to control the representation payload: positive = truncate to N chars (default 500), `0` = omit, negative = include in full.
 
@@ -122,6 +122,7 @@ pip install -e .
 | `KEYCLOAK_DEADLINE` | Per-call wall-clock budget (seconds) for the heavy event/TOTP tools. When a wide window / large realm would exceed it, the tool stops and returns a **disclosed partial** (⚠️ warning) instead of running past the client's ~60s gateway timeout and hammering KeyCloak. `0` or negative disables. | `45` |
 | `KEYCLOAK_MAX_EVENTS` | Per-pagination cap on events fetched by the event tools (also bounds how deep the slow high-offset pagination goes). Over the cap the result is a disclosed partial. `0` or negative disables. | `200000` |
 | `KEYCLOAK_MAX_USERS` | Default cap on users scanned by `get_totp_users` when its `max_users` argument is `0` (each user costs one credential call). `0` or negative disables (whole realm, bounded only by `KEYCLOAK_DEADLINE`). | `5000` |
+| `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | Comma-separated custom user-attribute keys that `get_user` is allowed to surface. Unset by default: `get_user` only ever returns username/name/email/enabled/created, since the search endpoint it resolves the username through returns a brief representation with no `attributes` at all. Opting a key in makes `get_user` do one extra by-ID lookup and append that attribute's value when present. Everything else stays out of tool output. As a safety net, a whitelisted key whose name looks credential-shaped (contains `password`, `secret`, `token`, etc.) is reported as blocked rather than shown — not a guarantee, since a credential attribute named outside that pattern list still gets through. | *unset* |
 
 ### KeyCloak client setup
 

@@ -99,6 +99,26 @@ class TestGetUserByUsername:
         assert KeyCloakClient().get_user_by_username("nobody") is None
 
 
+class TestGetUserById:
+    def test_returns_full_representation(self, mock_api):
+        rep = {
+            "id": "user-uuid-1",
+            "username": "alice@example.com",
+            "enabled": True,
+            "attributes": {"custom_key": ["value1"]},
+        }
+        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(200, json=rep))
+        result = KeyCloakClient().get_user_by_id("user-uuid-1")
+        assert result["attributes"] == {"custom_key": ["value1"]}
+
+    def test_not_found_raises(self, mock_api, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.sleep", lambda *_: None)
+        route = mock_api.get(f"{ADMIN_BASE}/users/missing-uuid").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().get_user_by_id("missing-uuid")
+        assert route.call_count == 1
+
+
 class TestResetPassword:
     def test_success(self, mock_api):
         mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1/reset-password").mock(return_value=httpx.Response(204))
@@ -112,7 +132,7 @@ class TestSetUserEnabled:
             "id": "user-uuid-1",
             "username": "alice@example.com",
             "enabled": True,
-            "attributes": {"temp_password": ["x"], "sso_ext": ["y"]},
+            "attributes": {"provisioning_flag": ["x"], "sso_ext": ["y"]},
         }
         mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(200, json=rep))
         put_route = mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(204))
@@ -121,7 +141,7 @@ class TestSetUserEnabled:
         sent = json.loads(put_route.calls.last.request.content)
         assert sent["enabled"] is False
         # Custom attributes must survive the toggle, not be dropped.
-        assert sent["attributes"] == {"temp_password": ["x"], "sso_ext": ["y"]}
+        assert sent["attributes"] == {"provisioning_flag": ["x"], "sso_ext": ["y"]}
 
 
 class TestGetUserGroups:
@@ -323,7 +343,7 @@ class TestGetAdminEvents:
                 "resourceType": "USER",
                 "resourcePath": "users/user-uuid-1",
                 "authDetails": {"userId": "admin-uuid", "ipAddress": "10.0.0.1"},
-                "representation": '{"attributes":{"temp_password":["xxx"]}}',
+                "representation": '{"attributes":{"provisioning_flag":["xxx"]}}',
             }
         ]
         route = mock_api.get(f"{ADMIN_BASE}/admin-events").mock(return_value=httpx.Response(200, json=events))

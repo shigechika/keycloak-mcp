@@ -136,6 +136,11 @@ PROBES: dict[str, Probe] = {
     "get_user": Probe(
         args_factory=_first_username,
         must_match=(r"^# \S+", r"^ID: "),
+        # Deliberately not asserting on the optional `Attribute[...]` lines: they
+        # only appear when this live environment's KEYCLOAK_USER_ATTRIBUTE_WHITELIST
+        # is set, and a probe can't name a real attribute key (no site-specific
+        # values in this file). That code path is covered by unit tests instead
+        # (tests/test_server.py::TestGetUser's whitelist cases).
     ),
     "get_user_sessions": Probe(
         args_factory=_first_username,

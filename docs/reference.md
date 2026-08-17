@@ -83,7 +83,7 @@ by the user themself. Actions performed by an administrator, or by a service
 account writing a custom attribute, do not appear there at all;
 `get_admin_events` is the endpoint that does. `get_user_attribute_history` is
 `get_admin_events` pre-scoped to one user, useful for confirming when an
-automated pipeline last wrote something like a `temp_password` attribute.
+automated pipeline last wrote something like a `provisioning_flag` attribute.
 
 ## CLI
 

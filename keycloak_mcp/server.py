@@ -49,6 +49,16 @@ def _normalize_ip(ip: str) -> str:
         return ip
 
 
+def _split_csv(raw: str) -> list[str]:
+    """Split a comma-separated string into stripped, non-empty parts.
+
+    Shared by every comma-separated-list argument/env var in this module
+    (event/operation/resource type filters, the attribute whitelist); casing
+    and empty-list fallbacks are the caller's concern, not this helper's.
+    """
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def _default_date_from(date_from: str) -> str | None:
     """Return date_from if given; otherwise compute a default lookback window.
 
@@ -117,6 +127,41 @@ def _max_users() -> int | None:
     0/negative scans the whole realm, bounded only by the deadline). Used only when the tool's
     ``max_users`` argument is 0."""
     return _positive_int_env("KEYCLOAK_MAX_USERS", _MAX_USERS_DEFAULT)
+
+
+def _user_attribute_whitelist() -> list[str]:
+    """Custom user-attribute keys get_user is allowed to surface, from
+    KEYCLOAK_USER_ATTRIBUTE_WHITELIST (comma-separated attribute keys). Empty/unset by
+    default, so get_user's output — and the extra by-ID lookup needed to see attributes at
+    all (see get_user_by_id) — is unchanged unless an operator opts specific keys in. This
+    keeps arbitrary custom attributes (internal provisioning state, SSO/Shibboleth extension
+    attributes, other site-specific fields, …) out of LLM context by default; only
+    realm-specific deployments that need one attribute surfaced (e.g. an enrollment-status
+    field for account lifecycle decisions) should set this."""
+    return _split_csv(os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", ""))
+
+
+#: Substrings (case-insensitive) that mark an attribute key as credential-shaped, so
+#: get_user refuses to print its value even if an operator whitelists it — a safety
+#: net for the common naming patterns, not a guarantee: a credential attribute named
+#: outside these patterns is not caught. Deliberately excludes bare "key" and "otp",
+#: which also match innocuous metadata keys (e.g. "totp_enabled").
+_CREDENTIAL_KEY_SUBSTRINGS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "private_key",
+    "api_key",
+    "apikey",
+)
+
+
+def _looks_like_credential_key(attribute_key: str) -> bool:
+    """True if `attribute_key` contains a credential-shaped substring (case-insensitive)."""
+    lowered = attribute_key.lower()
+    return any(marker in lowered for marker in _CREDENTIAL_KEY_SUBSTRINGS)
 
 
 def _with_warning(text: str, truncated: bool) -> str:
@@ -295,6 +340,14 @@ def search_users(query: str, max_results: int = 20) -> str:
 def get_user(username: str) -> str:
     """Get detailed user information by exact username (email).
 
+    If KEYCLOAK_USER_ATTRIBUTE_WHITELIST names any custom attribute keys, this
+    also does one extra by-ID lookup and appends whichever of those keys are
+    present on the user (the search endpoint used to resolve the username
+    returns a brief representation that omits ``attributes`` entirely). A
+    whitelisted key whose name looks credential-shaped (contains "password",
+    "secret", "token", etc. — see _looks_like_credential_key) is reported as
+    blocked rather than shown, as a safety net on top of the whitelist itself.
+
     Args:
         username: Exact username (e.g., user@example.com).
     """
@@ -309,6 +362,36 @@ def get_user(username: str) -> str:
         f"Enabled: {u.get('enabled', '')}",
         f"Created: {_format_ts(u.get('createdTimestamp', ''))}",
     ]
+    whitelist = _user_attribute_whitelist()
+    if whitelist:
+        try:
+            full = _kc().get_user_by_id(u["id"])
+        except Exception as e:  # noqa: BLE001 — never let the extra by-ID lookup crash get_user
+            # Covers the TOCTOU window where the user is deleted between the username
+            # search above and this by-ID fetch, and permission setups where GET
+            # /users/{id} is denied even though the search endpoint is allowed. Mirrors
+            # health_check's redaction: report the failure type/status, not the httpx
+            # exception text (which embeds the full internal admin API URL).
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            detail = f"{type(e).__name__} {status}" if status else type(e).__name__
+            lines.append(f"Attributes: unavailable ({detail})")
+        else:
+            attributes = full.get("attributes") or {}
+            for key in whitelist:
+                if key not in attributes:
+                    continue
+                if _looks_like_credential_key(key):
+                    # Safety net, not a guarantee: an operator can still whitelist a
+                    # credential-bearing attribute whose name happens not to match any
+                    # of these substrings. This only stops the common naming patterns.
+                    lines.append(f"Attribute[{key}]: <blocked: credential-like key, not shown>")
+                    continue
+                values = attributes[key]
+                # Attribute values are normally list[str], but attributes written outside
+                # the Admin API (LDAP sync, broker mappers, direct DB writes) aren't
+                # guaranteed to be — str() each element rather than assuming.
+                value = ", ".join(str(v) for v in values) if isinstance(values, list) else str(values)
+                lines.append(f"Attribute[{key}]: {value}")
     return "\n".join(lines)
 
 
@@ -903,7 +986,7 @@ def get_ip_activity(
             affect summary/users/clients.
     """
     resolved_date_from = _default_date_from(date_from)
-    types = [t.strip() for t in event_types.split(",") if t.strip()]
+    types = _split_csv(event_types)
     error = None if types else f"event_types must contain at least one event type, got {event_types!r}"
 
     all_events: list[dict] = []
@@ -1195,7 +1278,7 @@ def get_admin_events(
     """Get KeyCloak admin events (changes performed via the Admin REST API).
 
     Admin events record operations performed by service accounts or admin users
-    — e.g. custom user attribute updates (``temp_password``), role / group
+    — e.g. custom user attribute updates (``provisioning_flag``), role / group
     assignments, client configuration changes. These are distinct from user
     events (login / password change). Use this when ``UPDATE_PROFILE`` in
     ``get_events`` is empty but an attribute is known to have changed.
@@ -1209,8 +1292,8 @@ def get_admin_events(
         max_results: Maximum results (default 50).
         max_repr: Max chars of the representation field. 0 = omit, -1 = full.
     """
-    op_list = [s.strip() for s in operation_types.split(",") if s.strip()] or None
-    rt_list = [s.strip() for s in resource_types.split(",") if s.strip()] or None
+    op_list = _split_csv(operation_types) or None
+    rt_list = _split_csv(resource_types) or None
     events = _kc().get_admin_events(
         operation_types=op_list,
         resource_types=rt_list,
@@ -1240,7 +1323,7 @@ def get_user_attribute_history(
 
     Queries admin events scoped to ``users/{userId}`` with UPDATE / ACTION
     operations. Intended for tracking custom attribute changes such as
-    ``temp_password`` which are written by admin API and do **not** surface in
+    ``provisioning_flag`` which are written by admin API and do **not** surface in
     ``get_events`` (which only shows user-driven events like LOGIN /
     UPDATE_PASSWORD).
 

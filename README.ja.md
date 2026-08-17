@@ -64,7 +64,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | ツール | 説明 |
 |------|------|
 | `get_admin_events` | 操作種別（CREATE / UPDATE / DELETE / ACTION）、リソース種別（USER / CLIENT / ROLE / GROUP / …）、リソースパス、日付範囲でフィルタ |
-| `get_user_attribute_history` | 特定ユーザに対する UPDATE/ACTION イベントを抽出。プロビジョニング処理が `temp_password` のようなカスタム属性をいつ書き込んだかを追うのに便利 |
+| `get_user_attribute_history` | 特定ユーザに対する UPDATE/ACTION イベントを抽出。プロビジョニング処理が `provisioning_flag` のようなカスタム属性をいつ書き込んだかを追うのに便利 |
 
 どちらも `max_repr` で representation ペイロードを制御できる: 正の数 = N 文字で切り詰め（デフォルト 500）、`0` = 省略、負の数 = 全文表示。
 
@@ -120,6 +120,7 @@ pip install -e .
 | `KEYCLOAK_DEADLINE` | 重いイベント/TOTP 系ツール1回あたりの実時間バジェット（秒）。広い窓や大規模レルムで超過しそうなときは、クライアントの ~60秒ゲートウェイタイムアウトを超えて KeyCloak を叩き続ける代わりに、途中で打ち切って**部分結果（⚠️ 警告付き）**を返す。`0`/負の値で無効。 | `45` |
 | `KEYCLOAK_MAX_EVENTS` | イベント系ツールの1ページングあたりのイベント取得上限（激遅化する深いオフセットの深さも制限）。上限超過時は部分結果を開示。`0`/負の値で無効。 | `200000` |
 | `KEYCLOAK_MAX_USERS` | `get_totp_users` の `max_users` 引数が `0` のときの走査ユーザー数の既定上限（1ユーザーにつき credential 呼び出し1回）。`0`/負の値で無効（全レルム、`KEYCLOAK_DEADLINE` のみで制限）。 | `5000` |
+| `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | `get_user` が出力してよいカスタム属性キーのカンマ区切りリスト。未設定時、`get_user` はユーザー名・氏名・メール・有効フラグ・作成日時のみを返す（ユーザー名解決に使う検索エンドポイントは brief representation を返し、`attributes` を一切含まないため）。キーをホワイトリストに入れると、`get_user` はその場でID指定の追加取得を1回行い、該当キーが存在すれば値を追記する。それ以外の属性は出力されない。安全弁として、`password`・`secret`・`token` などクレデンシャルらしき語を含むキー名はホワイトリストに入れても値を表示せずブロックされる（ただしこのパターンに当てはまらない名前のクレデンシャル属性までは防げない） | *未設定* |
 
 ### KeyCloak 側のクライアント設定
 
