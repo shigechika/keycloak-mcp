@@ -111,6 +111,13 @@ class TestGetUserById:
         result = KeyCloakClient().get_user_by_id("user-uuid-1")
         assert result["attributes"] == {"custom_key": ["value1"]}
 
+    def test_not_found_raises(self, mock_api, monkeypatch):
+        monkeypatch.setattr("keycloak_mcp.client.time.sleep", lambda *_: None)
+        route = mock_api.get(f"{ADMIN_BASE}/users/missing-uuid").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().get_user_by_id("missing-uuid")
+        assert route.call_count == 1
+
 
 class TestResetPassword:
     def test_success(self, mock_api):

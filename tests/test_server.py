@@ -171,6 +171,27 @@ class TestUserAttributeWhitelist:
         assert server._user_attribute_whitelist() == ["key_a", "key_b"]
 
 
+class TestLooksLikeCredentialKey:
+    def test_matches_known_substrings(self):
+        for key in (
+            "temp_password",
+            "reset_token",
+            "client_secret",
+            "api_key",
+            "apikey",
+            "private_key",
+            "credential_id",
+        ):
+            assert server._looks_like_credential_key(key), key
+
+    def test_case_insensitive(self):
+        assert server._looks_like_credential_key("Reset_Token")
+
+    def test_non_credential_key_not_matched(self):
+        for key in ("enrollment_status", "graduation_status_code", "totp_enabled", "sso_ext"):
+            assert not server._looks_like_credential_key(key), key
+
+
 class TestGetUser:
     @patch.object(server, "_kc")
     def test_found(self, mock):
@@ -255,6 +276,30 @@ class TestGetUser:
         }
         result = server.get_user("alice@example.com")
         assert "Attribute[custom_key]: None, 1, x" in result
+
+    @patch.object(server, "_kc")
+    def test_credential_shaped_whitelisted_key_is_blocked(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "reset_token")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.return_value = {
+            **SAMPLE_USER,
+            "attributes": {"reset_token": ["super-secret-value"]},
+        }
+        result = server.get_user("alice@example.com")
+        assert "Attribute[reset_token]: <blocked: credential-like key, not shown>" in result
+        assert "super-secret-value" not in result
+
+    @patch.object(server, "_kc")
+    def test_credential_shaped_key_match_is_case_insensitive(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "Reset_Token")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.return_value = {
+            **SAMPLE_USER,
+            "attributes": {"Reset_Token": ["super-secret-value"]},
+        }
+        result = server.get_user("alice@example.com")
+        assert "<blocked: credential-like key, not shown>" in result
+        assert "super-secret-value" not in result
 
 
 class TestGetUserCredentials:

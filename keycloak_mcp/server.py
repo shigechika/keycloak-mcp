@@ -141,6 +141,29 @@ def _user_attribute_whitelist() -> list[str]:
     return _split_csv(os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", ""))
 
 
+#: Substrings (case-insensitive) that mark an attribute key as credential-shaped, so
+#: get_user refuses to print its value even if an operator whitelists it — a safety
+#: net for the common naming patterns, not a guarantee: a credential attribute named
+#: outside these patterns is not caught. Deliberately excludes bare "key" and "otp",
+#: which also match innocuous metadata keys (e.g. "totp_enabled").
+_CREDENTIAL_KEY_SUBSTRINGS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "private_key",
+    "api_key",
+    "apikey",
+)
+
+
+def _looks_like_credential_key(attribute_key: str) -> bool:
+    """True if `attribute_key` contains a credential-shaped substring (case-insensitive)."""
+    lowered = attribute_key.lower()
+    return any(marker in lowered for marker in _CREDENTIAL_KEY_SUBSTRINGS)
+
+
 def _with_warning(text: str, truncated: bool) -> str:
     """Prepend the partial-result warning to a tool's text output when it was cut short."""
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
@@ -320,7 +343,10 @@ def get_user(username: str) -> str:
     If KEYCLOAK_USER_ATTRIBUTE_WHITELIST names any custom attribute keys, this
     also does one extra by-ID lookup and appends whichever of those keys are
     present on the user (the search endpoint used to resolve the username
-    returns a brief representation that omits ``attributes`` entirely).
+    returns a brief representation that omits ``attributes`` entirely). A
+    whitelisted key whose name looks credential-shaped (contains "password",
+    "secret", "token", etc. — see _looks_like_credential_key) is reported as
+    blocked rather than shown, as a safety net on top of the whitelist itself.
 
     Args:
         username: Exact username (e.g., user@example.com).
@@ -353,6 +379,12 @@ def get_user(username: str) -> str:
             attributes = full.get("attributes") or {}
             for key in whitelist:
                 if key not in attributes:
+                    continue
+                if _looks_like_credential_key(key):
+                    # Safety net, not a guarantee: an operator can still whitelist a
+                    # credential-bearing attribute whose name happens not to match any
+                    # of these substrings. This only stops the common naming patterns.
+                    lines.append(f"Attribute[{key}]: <blocked: credential-like key, not shown>")
                     continue
                 values = attributes[key]
                 # Attribute values are normally list[str], but attributes written outside

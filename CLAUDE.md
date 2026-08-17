@@ -49,7 +49,11 @@ KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
 keys) opts specific custom user attributes into `get_user`'s output — unset,
 `get_user` never fetches or surfaces `attributes` at all (see
 `_user_attribute_whitelist`/`get_user_by_id`), so no custom attribute reaches
-tool output, hence LLM context, unless an operator explicitly names it.
+tool output, hence LLM context, unless an operator explicitly names it. A
+whitelisted key that matches `_looks_like_credential_key`'s substring list
+(`password`, `secret`, `token`, …) is reported as blocked rather than shown —
+a safety net on top of the whitelist, not a guarantee for arbitrarily-named
+credential attributes.
 
 ## Conventions
 

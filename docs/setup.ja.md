@@ -44,7 +44,7 @@ uv sync          # または: pip install -e .
 | `KEYCLOAK_DEADLINE` | 重いイベント/TOTP ツールの1呼び出しあたりの時間予算（秒）。`0` 以下で無効化 | `45` |
 | `KEYCLOAK_MAX_EVENTS` | 1呼び出しで取得するイベント件数の上限。`0` 以下で無効化 | `200000` |
 | `KEYCLOAK_MAX_USERS` | `get_totp_users` の `max_users` 引数が `0` のときに走査するユーザー数の既定上限。`0` 以下で無効化 | `5000` |
-| `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | `get_user` が出力してよいカスタム属性キーのカンマ区切りリスト。未設定なら `get_user` は `attributes` を取得も表示もしない | *未設定* |
+| `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | `get_user` が出力してよいカスタム属性キーのカンマ区切りリスト。未設定なら `get_user` は `attributes` を取得も表示もしない。クレデンシャルらしき名前のキーはホワイトリストに入れてもブロックされる（安全弁であり保証ではない） | *未設定* |
 
 ## 何かに組み込む前に確認する
 
