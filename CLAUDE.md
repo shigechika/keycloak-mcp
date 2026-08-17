@@ -45,6 +45,11 @@ caps so a wide event window or a whole-realm `get_totp_users` returns a
 disclosed partial (⚠️) instead of blowing the ~60s gateway and hammering
 KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
 `_deadline_seconds`/`_max_events`/`_max_users`). Each `0`/negative disables.
+`KEYCLOAK_USER_ATTRIBUTE_WHITELIST` (default unset, comma-separated attribute
+keys) opts specific custom user attributes into `get_user`'s output — unset,
+`get_user` never fetches or surfaces `attributes` at all (see
+`_user_attribute_whitelist`/`get_user_by_id`), so no custom attribute reaches
+tool output, hence LLM context, unless an operator explicitly names it.
 
 ## Conventions
 

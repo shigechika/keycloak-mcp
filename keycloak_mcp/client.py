@@ -182,9 +182,22 @@ class KeyCloakClient:
         return self._get(f"/users/{user_id}/credentials")
 
     def get_user_by_username(self, username: str) -> dict | None:
-        """Get user by exact username. Returns None if not found."""
+        """Get user by exact username. Returns None if not found.
+
+        Uses the search endpoint, which KeyCloak returns in brief representation
+        (no ``attributes``). Use :meth:`get_user_by_id` for the full representation.
+        """
         users = self._get("/users", {"username": username, "exact": "true"})
         return users[0] if users else None
+
+    def get_user_by_id(self, user_id: str) -> dict:
+        """Get the full user representation by ID, including custom ``attributes``.
+
+        Unlike :meth:`get_user_by_username` (which hits the brief-representation
+        search endpoint), ``GET /users/{id}`` always returns the complete
+        representation.
+        """
+        return self._get(f"/users/{user_id}")
 
     def reset_password(self, user_id: str, password: str, temporary: bool = False) -> int:
         """Reset a user's password."""
@@ -220,7 +233,7 @@ class KeyCloakClient:
         extension attributes, …) are preserved rather than dropped by a
         partial update. Returns the PUT status code.
         """
-        rep = self._get(f"/users/{user_id}")
+        rep = self.get_user_by_id(user_id)
         rep["enabled"] = enabled
         return self._put(f"/users/{user_id}", rep)
 

@@ -45,6 +45,7 @@ uv sync          # or: pip install -e .
 | `KEYCLOAK_DEADLINE` | Wall-clock budget (seconds) per call for the heavy event/TOTP tools; `0` or negative disables | `45` |
 | `KEYCLOAK_MAX_EVENTS` | Cap on events fetched per call; `0` or negative disables | `200000` |
 | `KEYCLOAK_MAX_USERS` | Default cap on users scanned by `get_totp_users` when its `max_users` argument is `0`; `0` or negative disables | `5000` |
+| `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | Comma-separated custom attribute keys `get_user` may surface; unset means `get_user` never fetches or shows `attributes` at all | *unset* |
 
 ## Verify before wiring it into anything
 

@@ -99,6 +99,19 @@ class TestGetUserByUsername:
         assert KeyCloakClient().get_user_by_username("nobody") is None
 
 
+class TestGetUserById:
+    def test_returns_full_representation(self, mock_api):
+        rep = {
+            "id": "user-uuid-1",
+            "username": "alice@example.com",
+            "enabled": True,
+            "attributes": {"custom_key": ["value1"]},
+        }
+        mock_api.get(f"{ADMIN_BASE}/users/user-uuid-1").mock(return_value=httpx.Response(200, json=rep))
+        result = KeyCloakClient().get_user_by_id("user-uuid-1")
+        assert result["attributes"] == {"custom_key": ["value1"]}
+
+
 class TestResetPassword:
     def test_success(self, mock_api):
         mock_api.put(f"{ADMIN_BASE}/users/user-uuid-1/reset-password").mock(return_value=httpx.Response(204))

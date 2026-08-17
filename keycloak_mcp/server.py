@@ -119,6 +119,19 @@ def _max_users() -> int | None:
     return _positive_int_env("KEYCLOAK_MAX_USERS", _MAX_USERS_DEFAULT)
 
 
+def _user_attribute_whitelist() -> list[str]:
+    """Custom user-attribute keys get_user is allowed to surface, from
+    KEYCLOAK_USER_ATTRIBUTE_WHITELIST (comma-separated attribute keys). Empty/unset by
+    default, so get_user's output — and the extra by-ID lookup needed to see attributes at
+    all (see get_user_by_id) — is unchanged unless an operator opts specific keys in. This
+    keeps arbitrary custom attributes (temp_password, SSO/Shibboleth extension attributes,
+    site-specific fields, …) out of LLM context by default; only realm-specific deployments
+    that need one attribute surfaced (e.g. an enrollment-status field for account lifecycle
+    decisions) should set this."""
+    raw = os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "")
+    return [key.strip() for key in raw.split(",") if key.strip()]
+
+
 def _with_warning(text: str, truncated: bool) -> str:
     """Prepend the partial-result warning to a tool's text output when it was cut short."""
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
@@ -295,6 +308,11 @@ def search_users(query: str, max_results: int = 20) -> str:
 def get_user(username: str) -> str:
     """Get detailed user information by exact username (email).
 
+    If KEYCLOAK_USER_ATTRIBUTE_WHITELIST names any custom attribute keys, this
+    also does one extra by-ID lookup and appends whichever of those keys are
+    present on the user (the search endpoint used to resolve the username
+    returns a brief representation that omits ``attributes`` entirely).
+
     Args:
         username: Exact username (e.g., user@example.com).
     """
@@ -309,6 +327,16 @@ def get_user(username: str) -> str:
         f"Enabled: {u.get('enabled', '')}",
         f"Created: {_format_ts(u.get('createdTimestamp', ''))}",
     ]
+    whitelist = _user_attribute_whitelist()
+    if whitelist:
+        full = _kc().get_user_by_id(u["id"])
+        attributes = full.get("attributes") or {}
+        for key in whitelist:
+            if key not in attributes:
+                continue
+            values = attributes[key]
+            value = ", ".join(values) if isinstance(values, list) else str(values)
+            lines.append(f"Attribute[{key}]: {value}")
     return "\n".join(lines)
 
 

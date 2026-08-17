@@ -155,6 +155,20 @@ class TestSearchUsers:
         assert "No users found" in result
 
 
+class TestUserAttributeWhitelist:
+    def test_unset_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", raising=False)
+        assert server._user_attribute_whitelist() == []
+
+    def test_parses_comma_separated_keys(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "key_a, key_b ,key_c")
+        assert server._user_attribute_whitelist() == ["key_a", "key_b", "key_c"]
+
+    def test_blank_entries_dropped(self, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "key_a,,  ,key_b")
+        assert server._user_attribute_whitelist() == ["key_a", "key_b"]
+
+
 class TestGetUser:
     @patch.object(server, "_kc")
     def test_found(self, mock):
@@ -168,6 +182,35 @@ class TestGetUser:
         mock.return_value.get_user_by_username.return_value = None
         result = server.get_user("nobody")
         assert "not found" in result
+
+    @patch.object(server, "_kc")
+    def test_whitelist_unset_skips_attribute_lookup(self, mock, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", raising=False)
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        result = server.get_user("alice@example.com")
+        mock.return_value.get_user_by_id.assert_not_called()
+        assert "Attribute[" not in result
+
+    @patch.object(server, "_kc")
+    def test_whitelisted_attribute_present(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "custom_key")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.return_value = {
+            **SAMPLE_USER,
+            "attributes": {"custom_key": ["custom_value"], "other_key": ["secret"]},
+        }
+        result = server.get_user("alice@example.com")
+        mock.return_value.get_user_by_id.assert_called_once_with("user-uuid-1")
+        assert "Attribute[custom_key]: custom_value" in result
+        assert "other_key" not in result
+
+    @patch.object(server, "_kc")
+    def test_whitelisted_attribute_absent(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", "custom_key")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_by_id.return_value = {**SAMPLE_USER, "attributes": {}}
+        result = server.get_user("alice@example.com")
+        assert "Attribute[" not in result
 
 
 class TestGetUserCredentials:
