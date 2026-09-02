@@ -51,7 +51,7 @@ dev = [
     # widens a selected rule family or changes formatter output would turn the
     # lint gate red on a pull request that changed nothing. Dependabot bumps
     # this as a visible PR instead.
-    "ruff==0.16.4",
+    "ruff==0.16.5",
 ]
 
 [tool.setuptools]
