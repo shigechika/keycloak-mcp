@@ -1,5 +1,6 @@
 """Tests for MCP server tools."""
 
+import ipaddress
 from datetime import datetime, timedelta
 from unittest.mock import ANY, patch
 
@@ -1740,3 +1741,113 @@ class TestPartialDisclosure:
         result = server.daily_brief()
         assert "## WARNING" in result
         assert "[PARTIAL]" in result
+
+
+class TestSprayAnalysis:
+    """Pure success-rate rule shared by spray_check and daily_brief."""
+
+    @staticmethod
+    def _fail(ip, user, t, error="invalid_user_credentials"):
+        return {
+            "type": "LOGIN_ERROR",
+            "ipAddress": ip,
+            "time": t,
+            "details": {"username": user},
+            "clientId": "portal",
+            "error": error,
+        }
+
+    @staticmethod
+    def _ok(ip, t, user_id="u-1", username=None):
+        e = {"type": "LOGIN", "ipAddress": ip, "time": t, "userId": user_id, "clientId": "portal"}
+        if username:
+            e["details"] = {"username": username}
+        return e
+
+    def _run(self, success, failure, **kw):
+        opts = dict(
+            since_ms=0,
+            min_users=10,
+            max_success_rate=0.2,
+            min_report_users=3,
+            resolve_username=lambda uid: {"u-1": "Victim", "u-2": "other"}.get(uid),
+            is_internal=lambda ip: ip.startswith("10."),
+            known_egress=[],
+        )
+        opts.update(kw)
+        return server._spray_analysis(success, failure, **opts)
+
+    def test_spray_source_names_only_its_own_successes(self):
+        attacker = "203.0.113.5"
+        failure = [self._fail(attacker, f"user{i}", 1000 + i) for i in range(12)]
+        # a success from the attacker IP -> breached; a success from elsewhere -> not
+        success = [self._ok(attacker, 2000, user_id="u-1"), self._ok("198.51.100.7", 2100, user_id="u-2")]
+        r = self._run(success, failure)
+        assert [row["ip"] for row in r["spray"]] == [attacker]
+        row = r["spray"][0]
+        assert row["unique_users"] == 13  # 12 failures + resolved success username
+        assert row["successes"] == 1 and row["failures"] == 12
+        assert row["breached"] == [
+            {"time": ANY, "ip": attacker, "username": "victim", "user_id": "u-1", "client_id": "portal"}
+        ]
+        assert r["breached_total"] == 1
+        # the other IP has 1 user only -> below min_report_users, never listed
+        assert all(row["ip"] != "198.51.100.7" for row in r["external_ips"])
+
+    def test_no_events_from_ip_means_no_breach(self):
+        # Regression: a breach must never be attributed to an IP without a LOGIN event from it.
+        failure = [self._fail("203.0.113.5", f"user{i}", 1000 + i) for i in range(12)]
+        success = [self._ok("198.51.100.7", 2100, user_id="u-1")]
+        r = self._run(success, failure)
+        assert r["spray"][0]["breached"] == []
+        assert r["breached_total"] == 0
+
+    def test_high_success_rate_shared_egress_not_flagged(self):
+        egress = "192.0.2.10"
+        success = [self._ok(egress, 1000 + i, user_id=f"u-{i}") for i in range(20)]
+        failure = [self._fail(egress, "typo", 900)]
+        nets = [ipaddress.ip_network("192.0.2.0/24")]
+        r = self._run(success, failure, resolve_username=lambda uid: uid, known_egress=nets)
+        assert r["spray"] == []
+        row = r["external_ips"][0]
+        assert row["known_egress"] is True and row["flagged"] is False
+        assert row["success_rate"] > 0.9
+
+    def test_internal_ips_and_old_events_are_excluded(self):
+        failure = [self._fail("10.1.1.1", f"u{i}", 5000) for i in range(15)]
+        failure += [self._fail("203.0.113.5", f"old{i}", 100) for i in range(15)]  # before since_ms
+        r = self._run([], failure, since_ms=1000)
+        assert r["spray"] == [] and r["external_ips"] == []
+        assert r["internal_events_excluded"] == 15
+
+    def test_username_keyed_case_insensitively_on_both_sides(self):
+        ip = "203.0.113.9"
+        failure = [self._fail(ip, "Alice", 1)] + [self._fail(ip, f"user{i}", 2 + i) for i in range(10)]
+        success = [self._ok(ip, 100, user_id="u-9", username="ALICE")]
+        r = self._run(success, failure, resolve_username=lambda uid: None)
+        row = r["spray"][0]
+        assert row["unique_users"] == 11  # Alice/ALICE collapse
+        assert row["breached"][0]["username"] == "alice"
+
+    def test_error_counter_surfaces_scraped_list_signal(self):
+        ip = "203.0.113.5"
+        failure = [self._fail(ip, f"ghost{i}", i, error="user_not_found") for i in range(6)]
+        failure += [self._fail(ip, f"real{i}", 10 + i, error="invalid_user_credentials") for i in range(6)]
+        r = self._run([], failure)
+        assert r["spray"][0]["errors"] == {"user_not_found": 6, "invalid_user_credentials": 6}
+
+
+class TestSprayCheck:
+    @patch.object(server, "_kc")
+    def test_returns_fixed_shape_and_window(self, mock):
+        mock.return_value.get_events_all.side_effect = _evs([[], []])
+        result = server.spray_check(hours=24)
+        for key in ("window", "complete", "spray", "external_ips", "breached_total", "rule", "known_egress_configured"):
+            assert key in result
+        assert result["window"]["hours"] == 24
+        assert result["complete"] is True and result["spray"] == []
+
+    @patch.object(server, "_kc")
+    def test_truncated_events_mark_incomplete(self, mock):
+        mock.return_value.get_events_all.side_effect = [([], True), ([], False)]
+        assert server.spray_check()["complete"] is False

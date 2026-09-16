@@ -47,6 +47,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | `get_realm_security_defenses` | Realm-level security policy: whether brute-force detection is enabled and its thresholds, the password policy, and browser security headers |
 | `get_login_failures_by_ip` | Failure breakdown by source IP (site-labeled when `KEYCLOAK_SITES_INI` is set) |
 | `get_ip_activity` | Exhaustive investigation of one source IP: success/failure counts, affected users/clients, timeline. Returns structured JSON. |
+| `spray_check` | Password-spray detection with the breach list built in: every external IP with ≥ 10 distinct users and < 20 % login success is a spray source, and its successful logins (evidence tuple `time / ip / username / user_id / client_id`) are the breached accounts. Single rule, fixed-shape JSON, `complete: false` when the window was truncated. |
 | `detect_login_loops` | Flag users who logged in too many times in a short window (redirect loops) |
 
 ### Events
@@ -84,7 +85,7 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 | Tool | Description |
 |------|-------------|
 | `health_check` | Report the running server version and verify the KeyCloak backend is reachable and the service account can authenticate. Lightweight (one token request; no user/event/session scans). Returns a fixed-shape dict with `status`, `auth`, and the configured URL/realm. The tool's own description enumerates the values those fields can take, and is the one place that does. |
-| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, active sessions, password updates, and admin events in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
+| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, spray check (same rule as `spray_check`, with breached accounts and evidence), active sessions, password updates, and admin events in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) and spray sources are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
 
 ## Setup
 
@@ -118,6 +119,7 @@ pip install -e .
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
 | `KEYCLOAK_SITES_INI` | INI file for IP-to-site labeling (see below) | *unset* |
+| `KEYCLOAK_KNOWN_EGRESS` | Comma-separated CIDRs of known shared egress points (VDI, VPN concentrators, partner proxies). `spray_check` labels matching IPs `known_egress: true`; they are never excluded | *unset* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | Default look-back window for event tools when `date_from` is omitted. Set to `0` to scan full history (can hang on large realms). | `24` |
 | `KEYCLOAK_DEADLINE` | Per-call wall-clock budget (seconds) for the heavy event/TOTP tools. When a wide window / large realm would exceed it, the tool stops and returns a **disclosed partial** (⚠️ warning) instead of running past the client's ~60s gateway timeout and hammering KeyCloak. `0` or negative disables. | `45` |
 | `KEYCLOAK_MAX_EVENTS` | Per-pagination cap on events fetched by the event tools (also bounds how deep the slow high-offset pagination goes). Over the cap the result is a disclosed partial. `0` or negative disables. | `200000` |
