@@ -222,6 +222,10 @@ def _in_networks(ip: str, nets: list) -> bool:
     return any(addr in n for n in nets)
 
 
+class _ResolveStopped(Exception):
+    """Raised by a ``resolve_username`` callback to stop further lookups (deadline hit)."""
+
+
 def _spray_analysis(
     success: list[dict],
     failure: list[dict],
@@ -250,7 +254,10 @@ def _spray_analysis(
     thousands of distinct successful users costs no API round-trips. A userId
     that stays unresolved is used as its own key and reported as such.
     ``min_report_users`` is clamped to ``min_users`` so a qualifying spray
-    source is never dropped by the reporting threshold.
+    source is never dropped by the reporting threshold. ``resolve_username``
+    may raise :class:`_ResolveStopped` (e.g. the shared deadline passed); the
+    lookup is then not counted, no further lookups are attempted and
+    ``resolve_capped`` is reported True.
     """
     min_report_users = min(min_report_users, min_users)
     by_ip: dict[str, dict] = {}
@@ -322,9 +329,13 @@ def _spray_analysis(
             return "unknown", None, False
         if uid in uid_to_name:
             return uid_to_name[uid], uid, True
-        if may_resolve and resolves_used < max_resolves:
+        if may_resolve and not resolve_capped and resolves_used < max_resolves:
+            try:
+                r = resolve_username(uid)
+            except _ResolveStopped:
+                resolve_capped = True
+                return uid, uid, False
             resolves_used += 1
-            r = resolve_username(uid)
             if r:
                 uid_to_name[uid] = r.strip().lower()
                 return uid_to_name[uid], uid, True
@@ -332,12 +343,27 @@ def _spray_analysis(
             resolve_capped = True
         return uid, uid, False
 
-    rows = []
-    breached_total = 0
-    for ip, b in by_ip.items():
+    def _stats(b: dict) -> tuple[int, int, float, int]:
+        """(successes, attempts, rate, upper bound on distinct users) for a bucket."""
         successes = len(b["success_events"])
         attempts = successes + b["failures"]
         rate = successes / attempts if attempts else 0.0
+        return successes, attempts, rate, len(b["failure_users"]) + successes
+
+    # Visit the buckets that can actually be flagged first so the resolve budget
+    # is spent on them rather than on low-rate rows that will never flag.
+    def _priority(item: tuple[str, dict]) -> tuple[bool, float]:
+        _, _, rate, upper = _stats(item[1])
+        return (not (upper >= min_users and rate < max_success_rate), rate)
+
+    rows = []
+    breached_total = 0
+    for ip, b in sorted(by_ip.items(), key=_priority):
+        successes, attempts, rate, upper = _stats(b)
+        # Even if every success were a distinct user this row cannot be reported;
+        # skip it before spending any lookups on it.
+        if upper < min_report_users:
+            continue
         # Only an IP below the success-rate ceiling can be flagged; spend API
         # lookups on those alone. Everything else keys unresolved successes by
         # userId (a slight over-count of unique_users on rows that can't flag).
@@ -1347,8 +1373,9 @@ def spray_check(
             ``external_ips`` at all (default 3; clamped to ``min_users``).
         max_resolves: Cap on GET /users/{id} lookups per call (default 200).
     """
+    hours = max(1, hours)
     now = datetime.now(tz=timezone.utc)
-    since = now - timedelta(hours=max(1, hours))
+    since = now - timedelta(hours=hours)
     date_from = since.astimezone().strftime("%Y-%m-%d")
     deadline = deadline_after(_deadline_seconds())
     success, failure, truncated = _fetch_login_events(date_from=date_from, deadline=deadline)
@@ -1358,7 +1385,7 @@ def spray_check(
 
     def _resolve(uid: str) -> str | None:
         if past_deadline(deadline):
-            return None
+            raise _ResolveStopped
         try:
             return (kc.get_user_by_id(uid) or {}).get("username")
         except Exception:
@@ -1851,7 +1878,7 @@ def daily_brief(
 
     def _resolve(uid: str) -> str | None:
         if past_deadline(deadline):
-            return None
+            raise _ResolveStopped
         try:
             return (kc.get_user_by_id(uid) or {}).get("username")
         except Exception:
@@ -1923,6 +1950,8 @@ def daily_brief(
                 )
     else:
         lines.append("- No spray source detected")
+    if not sc.available:
+        lines.append("- (KEYCLOAK_SITES_INI not set: internal IPs are not excluded, every IP counts as external)")
     near = [r for r in spray["external_ips"] if not r["flagged"] and r["successes"] and r["success_rate"] < 0.5]
     if near:
         lines.append("- Below threshold, review manually:")

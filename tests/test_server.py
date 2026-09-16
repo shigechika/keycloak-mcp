@@ -1855,6 +1855,39 @@ class TestSprayAnalysis:
         # first two resolved (lowercased), the rest keyed by bare userId
         assert [t["username"] for t in row["breached"]] == ["u-0", "u-1", "u-2", "u-3", "u-4"]
 
+    def test_resolver_deadline_stops_lookups_and_reports_capped(self):
+        ip = "203.0.113.5"
+        failure = [self._fail(ip, f"user{i}", 1000 + i) for i in range(30)]
+        success = [self._ok(ip, 2000 + i, user_id=f"u-{i}") for i in range(5)]
+        calls = []
+
+        def resolver(uid):
+            calls.append(uid)
+            if len(calls) > 2:
+                raise server._ResolveStopped
+            return uid.upper()
+
+        r = self._run(success, failure, resolve_username=resolver, max_resolves=200)
+        row = r["spray"][0]
+        assert len(calls) == 3  # two answered, the third raised and stopped further lookups
+        assert r["resolves_used"] == 2 and r["resolve_capped"] is True
+        assert row["unresolved_user_ids"] == 3
+
+    def test_resolve_budget_goes_to_flaggable_rows_first(self):
+        spray_ip = "203.0.113.5"
+        # 3 low-rate one-off IPs inserted BEFORE the spray source; each would otherwise
+        # spend one lookup and could exhaust a small budget ahead of the spray row.
+        failure = [self._fail(f"198.51.100.{i}", f"x{i}", 100 + i) for i in range(3)]
+        success = [self._ok(f"198.51.100.{i}", 200 + i, user_id=f"one-{i}") for i in range(3)]
+        failure += [self._fail(spray_ip, f"user{i}", 1000 + i) for i in range(30)]
+        success += [self._ok(spray_ip, 2000, user_id="victim")]
+        seen = []
+        r = self._run(success, failure, resolve_username=lambda uid: seen.append(uid) or uid, max_resolves=1)
+        assert seen == ["victim"]
+        assert r["spray"][0]["unresolved_user_ids"] == 0
+        # the one-off IPs can never reach min_report_users, so they are skipped without lookups
+        assert [row["ip"] for row in r["external_ips"]] == [spray_ip]
+
     def test_user_id_mapped_from_failure_events_without_resolver(self):
         ip = "203.0.113.5"
         failure = [self._fail(ip, f"user{i}", 1000 + i) for i in range(11)]
