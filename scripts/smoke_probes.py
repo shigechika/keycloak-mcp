@@ -225,6 +225,7 @@ PROBES: dict[str, Probe] = {
         min_chars=5,
         timeout=300,
     ),
+    "spray_check": Probe(must_match=(r'"spray"', r'"complete"'), min_chars=5, timeout=300),
     # -- state-changing tools: never exercised ----------------------------
     "reset_password": Probe(skip="destructive: would change a user's password"),
     "reset_passwords_batch": Probe(skip="destructive: would change passwords in bulk"),
