@@ -233,15 +233,26 @@ def _spray_analysis(
     resolve_username: Callable[[str], str | None],
     is_internal: Callable[[str], bool],
     known_egress: list,
+    max_resolves: int = 200,
 ) -> dict:
     """Pure per-source-IP success-rate analysis shared by spray_check and daily_brief.
 
     ``success`` / ``failure`` are raw LOGIN / LOGIN_ERROR events. Only events with
     ``time >= since_ms`` are considered. Internal IPs (``is_internal``) are dropped.
-    Users are keyed by lowercased username: failures carry ``details.username``,
-    successes usually carry only ``userId`` and are resolved through
-    ``resolve_username`` (called once per distinct userId on flagged IPs only).
+
+    Users are keyed by lowercased username on both sides. LOGIN_ERROR carries
+    ``details.username`` (and ``userId`` when the account exists), LOGIN usually
+    carries only ``userId``. userIds are mapped to usernames first from the
+    events themselves (any event that carries both), and only then through
+    ``resolve_username`` — which is called solely for IPs whose success rate
+    is below ``max_success_rate`` (the only ones that can be flagged) and at
+    most ``max_resolves`` times per call, so a busy shared egress with
+    thousands of distinct successful users costs no API round-trips. A userId
+    that stays unresolved is used as its own key and reported as such.
+    ``min_report_users`` is clamped to ``min_users`` so a qualifying spray
+    source is never dropped by the reporting threshold.
     """
+    min_report_users = min(min_report_users, min_users)
     by_ip: dict[str, dict] = {}
 
     def _bucket(ip: str) -> dict:
@@ -263,17 +274,20 @@ def _spray_analysis(
         b["last"] = t if b["last"] is None else max(b["last"], t)
 
     internal_dropped = 0
+    uid_to_name: dict[str, str] = {}
     for e in failure:
         t = e.get("time") or 0
         if t < since_ms:
             continue
         ip = _normalize_ip(e.get("ipAddress", "unknown"))
+        uname = ((e.get("details") or {}).get("username") or "").strip().lower()
+        if uname and e.get("userId"):
+            uid_to_name.setdefault(e["userId"], uname)
         if is_internal(ip):
             internal_dropped += 1
             continue
         b = _bucket(ip)
         b["failures"] += 1
-        uname = ((e.get("details") or {}).get("username") or "").strip().lower()
         if uname:
             b["failure_users"].add(uname)
         err = e.get("error") or "unknown"
@@ -284,6 +298,9 @@ def _spray_analysis(
         if t < since_ms:
             continue
         ip = _normalize_ip(e.get("ipAddress", "unknown"))
+        uname = ((e.get("details") or {}).get("username") or "").strip().lower()
+        if uname and e.get("userId"):
+            uid_to_name.setdefault(e["userId"], uname)
         if is_internal(ip):
             internal_dropped += 1
             continue
@@ -291,47 +308,60 @@ def _spray_analysis(
         b["success_events"].append(e)
         _touch(b, t)
 
-    resolved: dict[str, str | None] = {}
+    resolves_used = 0
+    resolve_capped = False
 
-    def _success_username(e: dict) -> tuple[str, str | None]:
+    def _success_username(e: dict, may_resolve: bool) -> tuple[str, str | None, bool]:
+        """Return (key, user_id, resolved) — resolved False when the key is a bare userId."""
+        nonlocal resolves_used, resolve_capped
         uname = ((e.get("details") or {}).get("username") or "").strip().lower()
         uid = e.get("userId")
         if uname:
-            return uname, uid
-        if uid:
-            if uid not in resolved:
-                resolved[uid] = resolve_username(uid)
-            r = resolved[uid]
-            return (r.lower() if r else uid), uid
-        return "unknown", None
+            return uname, uid, True
+        if not uid:
+            return "unknown", None, False
+        if uid in uid_to_name:
+            return uid_to_name[uid], uid, True
+        if may_resolve and resolves_used < max_resolves:
+            resolves_used += 1
+            r = resolve_username(uid)
+            if r:
+                uid_to_name[uid] = r.strip().lower()
+                return uid_to_name[uid], uid, True
+        elif may_resolve:
+            resolve_capped = True
+        return uid, uid, False
 
     rows = []
     breached_total = 0
     for ip, b in by_ip.items():
         successes = len(b["success_events"])
         attempts = successes + b["failures"]
-        # unique users need success usernames too; resolve lazily only where it matters
-        # (an IP can only be flagged if it already has >= min_users distinct failure users,
-        # or enough successes to matter) — resolve when the IP has any chance of reporting.
+        rate = successes / attempts if attempts else 0.0
+        # Only an IP below the success-rate ceiling can be flagged; spend API
+        # lookups on those alone. Everything else keys unresolved successes by
+        # userId (a slight over-count of unique_users on rows that can't flag).
+        may_resolve = rate < max_success_rate
         users = set(b["failure_users"])
         success_tuples = []
-        if len(users) + successes >= min_report_users:
-            for e in sorted(b["success_events"], key=lambda x: x.get("time") or 0):
-                uname, uid = _success_username(e)
-                users.add(uname)
-                success_tuples.append(
-                    {
-                        "time": _format_iso(e.get("time") or 0),
-                        "ip": ip,
-                        "username": uname,
-                        "user_id": uid,
-                        "client_id": e.get("clientId") or "unknown",
-                    }
-                )
+        unresolved = 0
+        for e in sorted(b["success_events"], key=lambda x: x.get("time") or 0):
+            uname, uid, ok = _success_username(e, may_resolve)
+            users.add(uname)
+            if not ok:
+                unresolved += 1
+            success_tuples.append(
+                {
+                    "time": _format_iso(e.get("time") or 0),
+                    "ip": ip,
+                    "username": uname,
+                    "user_id": uid,
+                    "client_id": e.get("clientId") or "unknown",
+                }
+            )
         unique_users = len(users)
         if unique_users < min_report_users:
             continue
-        rate = successes / attempts if attempts else 0.0
         flagged = unique_users >= min_users and rate < max_success_rate
         if flagged:
             breached_total += len(success_tuples)
@@ -348,6 +378,7 @@ def _spray_analysis(
                 "errors": dict(b["errors"].most_common()),
                 "first_seen": _format_iso(b["first"]) if b["first"] is not None else None,
                 "last_seen": _format_iso(b["last"]) if b["last"] is not None else None,
+                "unresolved_user_ids": unresolved,
                 "breached": success_tuples if flagged else [],
             }
         )
@@ -357,6 +388,8 @@ def _spray_analysis(
         "external_ips": rows,
         "breached_total": breached_total,
         "internal_events_excluded": internal_dropped,
+        "resolves_used": resolves_used,
+        "resolve_capped": resolve_capped,
     }
 
 
@@ -1255,6 +1288,7 @@ def spray_check(
     min_users: int = 10,
     max_success_rate: float = 0.2,
     min_report_users: int = 3,
+    max_resolves: int = 200,
 ) -> dict:
     """Detect password-spray sources and name the accounts they breached — one rule, one call.
 
@@ -1287,22 +1321,31 @@ def spray_check(
             first_seen, last_seen, breached.
         breached_total: number of evidence tuples across all flagged IPs.
         internal_events_excluded: events dropped because the IP is internal.
+        resolves_used / resolve_capped: how many GET /users/{id} lookups were
+            spent resolving success userIds, and whether ``max_resolves`` (or
+            the shared deadline) stopped further lookups. A row's
+            ``unresolved_user_ids`` counts successes keyed by bare userId; if
+            that is non-zero on a flagged row, ``unique_users`` may be
+            slightly over-counted and ``breached[].username`` is the id.
         known_egress_configured: whether KEYCLOAK_KNOWN_EGRESS is set. IPs in
             those ranges are LABELED ``known_egress: true``, never excluded —
             a shared VDI/VPN/proxy egress with many real users is expected to
             show a high success rate and usually is not flagged anyway.
 
     Users are keyed by lowercased username on both sides: LOGIN_ERROR carries
-    ``details.username``; LOGIN usually carries only ``userId``, which is
-    resolved via GET /users/{id} (only for IPs that could be reported, once
-    per distinct id).
+    ``details.username``; LOGIN usually carries only ``userId``. userIds are
+    mapped from the fetched events first (any event carrying both fields),
+    then via GET /users/{id} — only for IPs below the success-rate ceiling
+    (the only ones that can be flagged), at most ``max_resolves`` times, and
+    never past the shared KEYCLOAK_DEADLINE.
 
     Args:
         hours: Look-back window (default 24 — sized for a once-a-day patrol).
         min_users: Distinct users an IP must touch to count as a spray (default 10).
         max_success_rate: Success-rate ceiling for a spray (default 0.2).
         min_report_users: Distinct users an IP needs to appear in
-            ``external_ips`` at all (default 3).
+            ``external_ips`` at all (default 3; clamped to ``min_users``).
+        max_resolves: Cap on GET /users/{id} lookups per call (default 200).
     """
     now = datetime.now(tz=timezone.utc)
     since = now - timedelta(hours=max(1, hours))
@@ -1314,6 +1357,8 @@ def spray_check(
     sc = _site_classifier()
 
     def _resolve(uid: str) -> str | None:
+        if past_deadline(deadline):
+            return None
         try:
             return (kc.get_user_by_id(uid) or {}).get("username")
         except Exception:
@@ -1329,6 +1374,7 @@ def spray_check(
         resolve_username=_resolve,
         is_internal=lambda ip: sc.classify(ip) is not None,
         known_egress=_known_egress_networks(),
+        max_resolves=max_resolves,
     )
     result.update(
         {
@@ -1804,6 +1850,8 @@ def daily_brief(
     kc = _kc()
 
     def _resolve(uid: str) -> str | None:
+        if past_deadline(deadline):
+            return None
         try:
             return (kc.get_user_by_id(uid) or {}).get("username")
         except Exception:

@@ -1829,6 +1829,49 @@ class TestSprayAnalysis:
         assert row["unique_users"] == 11  # Alice/ALICE collapse
         assert row["breached"][0]["username"] == "alice"
 
+    def test_high_success_rate_ip_never_calls_the_resolver(self):
+        calls = []
+
+        def resolver(uid):
+            calls.append(uid)
+            return uid
+
+        egress = "192.0.2.10"
+        success = [self._ok(egress, 1000 + i, user_id=f"u-{i}") for i in range(500)]
+        r = self._run(success, [self._fail(egress, "x", 1)], resolve_username=resolver)
+        assert calls == []
+        row = r["external_ips"][0]
+        assert row["flagged"] is False and row["unresolved_user_ids"] == 500
+        assert r["resolves_used"] == 0 and r["resolve_capped"] is False
+
+    def test_resolver_is_capped_and_reported(self):
+        ip = "203.0.113.5"
+        failure = [self._fail(ip, f"user{i}", 1000 + i) for i in range(30)]
+        success = [self._ok(ip, 2000 + i, user_id=f"u-{i}") for i in range(5)]
+        r = self._run(success, failure, resolve_username=lambda uid: uid.upper(), max_resolves=2)
+        row = r["spray"][0]
+        assert r["resolves_used"] == 2 and r["resolve_capped"] is True
+        assert row["unresolved_user_ids"] == 3
+        # first two resolved (lowercased), the rest keyed by bare userId
+        assert [t["username"] for t in row["breached"]] == ["u-0", "u-1", "u-2", "u-3", "u-4"]
+
+    def test_user_id_mapped_from_failure_events_without_resolver(self):
+        ip = "203.0.113.5"
+        failure = [self._fail(ip, f"user{i}", 1000 + i) for i in range(11)]
+        # alice failed once (event carries her userId) and then succeeded (userId only)
+        failure.append({**self._fail(ip, "Alice", 1500), "userId": "u-alice"})
+        success = [self._ok(ip, 2000, user_id="u-alice")]
+        r = self._run(success, failure, resolve_username=lambda uid: (_ for _ in ()).throw(AssertionError("no lookup")))
+        row = r["spray"][0]
+        assert row["breached"][0]["username"] == "alice"
+        assert row["unique_users"] == 12 and row["unresolved_user_ids"] == 0
+
+    def test_min_report_users_is_clamped_to_min_users(self):
+        ip = "203.0.113.5"
+        failure = [self._fail(ip, f"user{i}", 1000 + i) for i in range(2)]
+        r = self._run([], failure, min_users=2, min_report_users=3)
+        assert [row["ip"] for row in r["spray"]] == [ip]
+
     def test_error_counter_surfaces_scraped_list_signal(self):
         ip = "203.0.113.5"
         failure = [self._fail(ip, f"ghost{i}", i, error="user_not_found") for i in range(6)]
