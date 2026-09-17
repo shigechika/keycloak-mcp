@@ -47,7 +47,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 | `get_realm_security_defenses` | Realm-level security policy: whether brute-force detection is enabled and its thresholds, the password policy, and browser security headers |
 | `get_login_failures_by_ip` | Failure breakdown by source IP (site-labeled when `KEYCLOAK_SITES_INI` is set) |
 | `get_ip_activity` | Exhaustive investigation of one source IP: success/failure counts, affected users/clients, timeline. Returns structured JSON. |
-| `spray_check` | Password-spray detection with the breach list built in: every external IP with ≥ 10 distinct users and < 20 % login success is a spray source, and its successful logins (evidence tuple `time / ip / username / user_id / client_id`) are the breached accounts. Single rule, fixed-shape JSON, `complete: false` when the window was truncated. |
+| `spray_check` | Password-spray detection with the breach list built in: every external IP with ≥ 10 distinct users and < 20 % login success is a spray source, and its successful logins (evidence tuple `time / ip / username / user_id / client_id`) are the breach candidates. Each row carries a `confidence`: `high` is a breach verdict; `low` means the volume rule fired on a shared egress (school NAT, home line, VDI) — signalled by `user_success_rate` (distinct users that logged in ÷ distinct users, ≥ 0.2), `failure_concentration` (share of failures on one username, ≥ 0.5) or a `KEYCLOAK_KNOWN_EGRESS` match — and the logins are to be verified with the owner, not published. `top_failed_users` and `not_found_domains` show who kept failing and which mistyped domains produced `user_not_found`. Fixed-shape JSON, `complete: false` when the window was truncated. |
 | `detect_login_loops` | Flag users who logged in too many times in a short window (redirect loops) |
 
 ### Events
@@ -119,7 +119,7 @@ pip install -e .
 | `KEYCLOAK_CLIENT_ID` | Service Account client ID | *required* |
 | `KEYCLOAK_CLIENT_SECRET` | Client secret | *required* |
 | `KEYCLOAK_SITES_INI` | INI file for IP-to-site labeling (see below) | *unset* |
-| `KEYCLOAK_KNOWN_EGRESS` | Comma-separated CIDRs of known shared egress points (VDI, VPN concentrators, partner proxies). `spray_check` labels matching IPs `known_egress: true`; they are never excluded | *unset* |
+| `KEYCLOAK_KNOWN_EGRESS` | Comma-separated CIDRs of known shared egress points (VDI, VPN concentrators, partner proxies). `spray_check` labels matching IPs `known_egress: true` and marks them `confidence: low`; they are never excluded | *unset* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | Default look-back window for event tools when `date_from` is omitted. Set to `0` to scan full history (can hang on large realms). | `24` |
 | `KEYCLOAK_DEADLINE` | Per-call wall-clock budget (seconds) for the heavy event/TOTP tools. When a wide window / large realm would exceed it, the tool stops and returns a **disclosed partial** (⚠️ warning) instead of running past the client's ~60s gateway timeout and hammering KeyCloak. `0` or negative disables. | `45` |
 | `KEYCLOAK_MAX_EVENTS` | Per-pagination cap on events fetched by the event tools (also bounds how deep the slow high-offset pagination goes). Over the cap the result is a disclosed partial. `0` or negative disables. | `200000` |
