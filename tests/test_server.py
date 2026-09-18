@@ -1912,6 +1912,97 @@ class TestSprayAnalysis:
         r = self._run([], failure)
         assert r["spray"][0]["errors"] == {"user_not_found": 6, "invalid_user_credentials": 6}
 
+    def test_classic_spray_is_high_confidence(self):
+        # Many names, one failure each, one success: the textbook spray shape.
+        attacker = "203.0.113.5"
+        failure = [self._fail(attacker, f"user{i}@example.edu", 1000 + i) for i in range(12)]
+        success = [self._ok(attacker, 2000, user_id="u-1")]
+        row = self._run(success, failure)["spray"][0]
+        assert row["confidence"] == "high" and row["signals"] == []
+        assert row["users_with_success"] == 1
+        assert row["user_success_rate"] == round(1 / 13, 4)
+        assert row["failure_concentration"] == round(1 / 12, 4)
+        assert row["not_found_domains"] == {}
+
+    def test_school_nat_typo_retries_are_low_confidence(self):
+        # A classroom behind one NAT: 14 students, 8 of them log in after a couple of
+        # mistyped attempts (wrong domain -> user_not_found). Volume alone still flags
+        # the row, but user_success_rate says "shared egress", not "spray".
+        nat = "198.51.100.20"
+        failure, success = [], []
+        for i in range(14):
+            failure.append(self._fail(nat, f"student{i}@example.edu", 1000 + i * 10))
+            failure.append(self._fail(nat, f"student{i}@example.edu", 1001 + i * 10))
+            if i < 8:
+                for k in (2, 3):
+                    failure.append(
+                        self._fail(nat, f"student{i}@exmaple.edu", 1000 + i * 10 + k, error="user_not_found")
+                    )
+                success.append(self._ok(nat, 1005 + i * 10, user_id=f"s-{i}", username=f"student{i}@example.edu"))
+        # 8 successes / 52 attempts = 15% -> flagged by volume; 8 of 14 users succeed = 57%.
+        r = self._run(success, failure)
+        row = r["spray"][0]
+        assert row["flagged"] is True
+        assert row["confidence"] == "low" and row["signals"] == ["user_success_rate"]
+        assert row["users_with_success"] == 8
+        assert row["user_success_rate"] >= 0.2
+        assert row["not_found_domains"] == {"exmaple.edu": 8}
+        assert len(row["breached"]) == 8  # candidates are still listed, with evidence
+        assert r["breached_total"] == 8 and r["breached_low_confidence"] == 8
+
+    def test_one_locked_out_user_makes_low_confidence(self):
+        # A home line: one user hammers a locked account (most failures on one name)
+        # while housemates log in cleanly. failure_concentration marks it low.
+        home = "198.51.100.30"
+        failure = [
+            self._fail(home, "forgetful@example.edu", 1000 + i, error="user_temporarily_disabled") for i in range(60)
+        ]
+        failure += [self._fail(home, f"other{i}@example.edu", 5000 + i) for i in range(4)]
+        success = [self._ok(home, 6000 + i, user_id=f"h-{i}", username=f"mate{i}@example.edu") for i in range(6)]
+        row = self._run(success, failure)["spray"][0]
+        assert row["confidence"] == "low"
+        assert "failure_concentration" in row["signals"]
+        assert row["failure_concentration"] == round(60 / 64, 4)
+        assert row["top_failed_users"][0] == {"username": "forgetful@example.edu", "failures": 60}
+
+    def test_known_egress_is_a_low_confidence_signal(self):
+        egress = "192.0.2.10"
+        failure = [self._fail(egress, f"user{i}@example.edu", 1000 + i) for i in range(12)]
+        success = [self._ok(egress, 2000, user_id="u-1")]
+        nets = [ipaddress.ip_network("192.0.2.0/24")]
+        row = self._run(success, failure, known_egress=nets)["spray"][0]
+        assert row["known_egress"] is True
+        assert row["confidence"] == "low" and row["signals"] == ["known_egress"]
+
+    def test_unflagged_rows_carry_the_evidence_fields_too(self):
+        ip = "203.0.113.9"
+        failure = [self._fail(ip, f"user{i}@example.edu", 1000 + i) for i in range(3)]
+        row = self._run([], failure)["external_ips"][0]
+        assert row["flagged"] is False
+        for key in (
+            "confidence",
+            "signals",
+            "users_with_success",
+            "user_success_rate",
+            "failure_concentration",
+            "top_failed_users",
+            "not_found_domains",
+        ):
+            assert key in row
+        assert row["users_with_success"] == 0 and row["user_success_rate"] == 0.0
+
+    def test_high_confidence_rows_sort_first(self):
+        spray, nat = "203.0.113.5", "198.51.100.20"
+        failure = [self._fail(spray, f"user{i}@example.edu", 1000 + i) for i in range(12)]
+        failure += [self._fail(nat, f"student{i}@example.edu", 3000 + i) for i in range(12)]
+        success = [self._ok(spray, 2000, user_id="u-1")]
+        success += [self._ok(nat, 4000 + i, user_id=f"s-{i}", username=f"student{i}@example.edu") for i in range(2)]
+        # nat: 2 successes / 14 attempts = 14% -> flagged; 2 of 12 users succeed = 17%,
+        # which a stricter max_user_success_rate turns into "low". spray: 1/13 stays "high".
+        r = self._run(success, failure, max_user_success_rate=0.15)
+        assert [row["confidence"] for row in r["spray"]] == ["high", "low"]
+        assert r["spray"][0]["ip"] == spray
+
 
 class TestSprayCheck:
     @patch.object(server, "_kc")
