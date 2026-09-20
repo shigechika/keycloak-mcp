@@ -18,7 +18,7 @@ one user, one IP, or one client.
 | Security | `get_brute_force_status`, `get_realm_security_defenses`, `get_login_failures_by_ip`, `get_ip_activity`, `detect_login_loops` |
 | Events | `get_events`, `get_login_stats`, `get_login_stats_by_hour`, `get_login_stats_by_client`, `get_password_update_events` |
 | Admin events | `get_admin_events`, `get_user_attribute_history` |
-| Sessions & clients | `get_session_stats`, `get_client_sessions`, `list_clients`, `get_realm_roles` |
+| Sessions & clients | `get_session_stats`, `get_client_sessions`, `list_clients`, `get_client`, `get_realm_roles` |
 | Morning patrol | `health_check`, `daily_brief` |
 
 **Four tools write:** `reset_password`, `reset_passwords_batch`, `logout_user`,

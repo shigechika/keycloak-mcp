@@ -53,6 +53,7 @@
 | `get_session_stats()` | クライアント別のアクティブセッション数 |
 | `get_client_sessions(client_id, max_results=100)` | 1クライアントのアクティブセッション |
 | `list_clients()` | レルムの SAML / OIDC クライアント |
+| `get_client(client_id)` | クライアント1件の設定。認証フローのオーバーライド（SP 単位の MFA 切り替え）を含む。`attributes` と `protocolMappers` は出力しないので、クライアントシークレットや SAML の署名鍵はツール出力に出ない。 |
 | `get_realm_roles()` | レルムレベルのロール |
 | `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・セッション・パスワード更新・管理イベント |
 

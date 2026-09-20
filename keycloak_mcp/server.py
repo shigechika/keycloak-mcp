@@ -1828,6 +1828,72 @@ def list_clients() -> str:
 
 
 @mcp.tool()
+def get_client(client_id: str) -> str:
+    """Show one client's configuration, including its authentication flow overrides.
+
+    Reports an explicit allowlist of fields rather than the raw client
+    representation. A client representation can carry ``secret``,
+    ``registrationAccessToken`` and, for SAML clients, signing material under
+    ``attributes``; ``attributes`` and ``protocolMappers`` are therefore omitted
+    entirely rather than filtered, so nothing credential-shaped reaches tool
+    output, hence LLM context.
+
+    The headline is ``authenticationFlowBindingOverrides``: pinning one client
+    to a non-default browser flow is how a single SP is made to require OTP
+    while the realm default stays untouched. KeyCloak stores those overrides as
+    flow IDs, so they are resolved to flow aliases here.
+
+    Args:
+        client_id: The clientId (not the internal UUID).
+    """
+    client = _kc().get_client_by_client_id(client_id)
+    if client is None:
+        return f"Client not found: {client_id}"
+
+    lines = [
+        f"# {client.get('clientId', client_id)}",
+        f"Internal ID: {client.get('id', '')}",
+        f"Protocol: {client.get('protocol', '')}",
+        f"Enabled: {client.get('enabled', '')}",
+        f"Public client: {client.get('publicClient', '')}",
+    ]
+    for label, key in (
+        ("Name", "name"),
+        ("Description", "description"),
+        ("Root URL", "rootUrl"),
+        ("Base URL", "baseUrl"),
+        ("Admin URL", "adminUrl"),
+    ):
+        value = client.get(key)
+        if value:
+            lines.append(f"{label}: {value}")
+    redirect_uris = client.get("redirectUris") or []
+    if redirect_uris:
+        lines.append(f"Redirect URIs ({len(redirect_uris)}):")
+        lines.extend(f"  {uri}" for uri in redirect_uris)
+
+    overrides = client.get("authenticationFlowBindingOverrides") or {}
+    lines.append("")
+    if not overrides:
+        lines.append("Authentication flow overrides: none (realm defaults apply)")
+        return "\n".join(lines)
+
+    # The overrides carry flow IDs; resolving them needs a second call, and a
+    # service account that can read clients cannot always read flows. Falling
+    # back to the raw ID still answers "is an override set", which is the
+    # question this tool exists for.
+    try:
+        aliases = {f.get("id"): f.get("alias", "") for f in _kc().get_authentication_flows()}
+    except Exception:
+        aliases = {}
+    lines.append("Authentication flow overrides:")
+    for binding, flow_id in sorted(overrides.items()):
+        alias = aliases.get(flow_id)
+        lines.append(f"  {binding}: {alias or '(alias unresolved)'} (id={flow_id})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def get_realm_roles() -> str:
     """List all realm-level roles."""
     roles = _kc().get_realm_roles()
