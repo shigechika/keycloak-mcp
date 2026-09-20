@@ -75,6 +75,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | `get_session_stats` | クライアント別のアクティブセッション数 |
 | `get_client_sessions` | 1 クライアント（SP）のアクティブセッション |
 | `list_clients` | Realm の SAML / OIDC クライアント |
+| `get_client` | クライアント1件の設定。認証フローのオーバーライド（SP 単位の MFA 切り替え）を含む。`attributes` と `protocolMappers` は出力しないので、クライアントシークレットや SAML の署名鍵はツール出力に出ない。 |
 | `get_realm_roles` | Realm ロール |
 
 ### 朝のパトロール

@@ -115,6 +115,12 @@ PROBES: dict[str, Probe] = {
         must_match=(r"^Clients \(\d+\):",),
         must_not_match=(r"^Clients \(0\):",),
     ),
+    "get_client": Probe(
+        # Every realm has the built-in `account` client, and it carries no flow
+        # override, so this pins the rendered shape rather than a realm's config.
+        args={"client_id": BUILTIN_CLIENT},
+        must_match=(r"^# \S+", r"^Authentication flow overrides"),
+    ),
     "count_users": Probe(
         must_match=(r"^Total users: \d+",),
         must_not_match=(r"^Total users: 0$",),

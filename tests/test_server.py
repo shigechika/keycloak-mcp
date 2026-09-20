@@ -2018,3 +2018,61 @@ class TestSprayCheck:
     def test_truncated_events_mark_incomplete(self, mock):
         mock.return_value.get_events_all.side_effect = [([], True), ([], False)]
         assert server.spray_check()["complete"] is False
+
+
+class TestGetClient:
+    @patch.object(server, "_kc")
+    def test_not_found(self, mock):
+        mock.return_value.get_client_by_client_id.return_value = None
+        assert server.get_client("nope") == "Client not found: nope"
+
+    @patch.object(server, "_kc")
+    def test_no_overrides_says_realm_defaults_apply(self, mock):
+        mock.return_value.get_client_by_client_id.return_value = {
+            "clientId": "account",
+            "id": "uuid-1",
+            "protocol": "openid-connect",
+            "enabled": True,
+        }
+        out = server.get_client("account")
+        assert out.startswith("# account")
+        assert "Authentication flow overrides: none (realm defaults apply)" in out
+        mock.return_value.get_authentication_flows.assert_not_called()
+
+    @patch.object(server, "_kc")
+    def test_override_is_resolved_to_a_flow_alias(self, mock):
+        mock.return_value.get_client_by_client_id.return_value = {
+            "clientId": "sp",
+            "id": "uuid-2",
+            "authenticationFlowBindingOverrides": {"browser": "flow-id"},
+        }
+        mock.return_value.get_authentication_flows.return_value = [
+            {"id": "flow-id", "alias": "browser otp required"},
+        ]
+        assert "browser: browser otp required (id=flow-id)" in server.get_client("sp")
+
+    @patch.object(server, "_kc")
+    def test_unresolvable_flow_still_reports_the_override(self, mock):
+        # A service account that can read clients cannot always read flows. The
+        # override itself is the answer, so losing the alias must not lose it.
+        mock.return_value.get_client_by_client_id.return_value = {
+            "clientId": "sp",
+            "id": "uuid-3",
+            "authenticationFlowBindingOverrides": {"browser": "flow-id"},
+        }
+        mock.return_value.get_authentication_flows.side_effect = RuntimeError("403")
+        assert "browser: (alias unresolved) (id=flow-id)" in server.get_client("sp")
+
+    @patch.object(server, "_kc")
+    def test_secret_and_attributes_never_reach_the_output(self, mock):
+        mock.return_value.get_client_by_client_id.return_value = {
+            "clientId": "sp",
+            "id": "uuid-4",
+            "secret": "s3cr3t-value",
+            "registrationAccessToken": "rat-value",
+            "attributes": {"saml.signing.private.key": "PRIVATE-KEY-VALUE"},
+            "protocolMappers": [{"name": "m", "config": {"x": "y"}}],
+        }
+        out = server.get_client("sp")
+        for leaked in ("s3cr3t-value", "rat-value", "PRIVATE-KEY-VALUE", "protocolMappers"):
+            assert leaked not in out

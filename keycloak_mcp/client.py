@@ -431,6 +431,10 @@ class KeyCloakClient:
         clients = self._get("/clients", {"clientId": client_id})
         return clients[0] if clients else None
 
+    def get_authentication_flows(self) -> list[dict]:
+        """List the realm's authentication flows."""
+        return self._get("/authentication/flows")
+
     def get_client_sessions(self, internal_id: str, max_results: int = 100) -> list[dict]:
         """Get active sessions for a client."""
         return self._get(f"/clients/{internal_id}/user-sessions", {"max": max_results})

@@ -18,7 +18,7 @@
 | セキュリティ | `get_brute_force_status`、`get_realm_security_defenses`、`get_login_failures_by_ip`、`get_ip_activity`、`detect_login_loops` |
 | イベント | `get_events`、`get_login_stats`、`get_login_stats_by_hour`、`get_login_stats_by_client`、`get_password_update_events` |
 | 管理イベント | `get_admin_events`、`get_user_attribute_history` |
-| セッション・クライアント | `get_session_stats`、`get_client_sessions`、`list_clients`、`get_realm_roles` |
+| セッション・クライアント | `get_session_stats`、`get_client_sessions`、`list_clients`、`get_client`、`get_realm_roles` |
 | 朝の点検 | `health_check`、`daily_brief` |
 
 **書き込みを行うのは4本だけです。** `reset_password`・`reset_passwords_batch`・

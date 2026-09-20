@@ -55,6 +55,7 @@ timeout.
 | `get_session_stats()` | Active session count per client |
 | `get_client_sessions(client_id, max_results=100)` | Active sessions for one client |
 | `list_clients()` | SAML and OIDC clients in the realm |
+| `get_client(client_id)` | One client's configuration, including its authentication flow overrides (the per-SP MFA switch). Omits `attributes` and `protocolMappers`, so no client secret or SAML signing material reaches tool output. |
 | `get_realm_roles()` | Realm-level roles |
 | `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, sessions, password updates, admin events |
 

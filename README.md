@@ -78,6 +78,7 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 | `get_session_stats` | Active session count per client |
 | `get_client_sessions` | Active sessions for one client (SP) |
 | `list_clients` | SAML and OIDC clients in the realm |
+| `get_client` | One client's configuration, including its authentication flow overrides (the per-SP MFA switch). Omits `attributes` and `protocolMappers`, so no client secret or SAML signing material reaches tool output. |
 | `get_realm_roles` | Realm-level roles |
 
 ### Morning Patrol
