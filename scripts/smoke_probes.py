@@ -45,6 +45,22 @@ BUILTIN_CLIENT = "account"
 USER_QUERY = "a"
 
 
+async def _first_client_id(call: Caller) -> dict[str, Any]:
+    """Discover a clientId at run time so the probe names no realm-specific value.
+
+    The built-in `account` client is present in a default realm but an
+    administrator can delete it, so it is not a safe constant to assert on.
+    """
+    payload = await call("list_clients", {})
+    text = payload if isinstance(payload, str) else str(payload)
+    # "Clients (N):\n  <clientId>  <protocol>  enabled=..." — the clientId runs
+    # to the two-space field separator, since a clientId may contain a space.
+    match = re.search(r"^ {2}(\S.*?) {2}\S", text, re.MULTILINE)
+    if not match:
+        raise SkipProbe("list_clients returned no client to probe with")
+    return {"client_id": match.group(1).strip()}
+
+
 async def _first_username(call: Caller) -> dict[str, Any]:
     """Discover a username at run time for the per-user tools."""
     payload = await call("search_users", {"query": USER_QUERY, "max_results": 1})
@@ -116,9 +132,7 @@ PROBES: dict[str, Probe] = {
         must_not_match=(r"^Clients \(0\):",),
     ),
     "get_client": Probe(
-        # Every realm has the built-in `account` client, and it carries no flow
-        # override, so this pins the rendered shape rather than a realm's config.
-        args={"client_id": BUILTIN_CLIENT},
+        args_factory=_first_client_id,
         must_match=(r"^# \S+", r"^Authentication flow overrides"),
     ),
     "count_users": Probe(

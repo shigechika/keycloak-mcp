@@ -438,6 +438,20 @@ class TestGetEventsWithClientId:
         assert "client" in str(route.calls[0].request.url)
 
 
+class TestGetAuthenticationFlows:
+    def test_returns_flows(self, mock_api):
+        flows = [{"id": "flow-1", "alias": "browser"}, {"id": "flow-2", "alias": "direct grant"}]
+        mock_api.get(f"{ADMIN_BASE}/authentication/flows").mock(return_value=httpx.Response(200, json=flows))
+        result = KeyCloakClient().get_authentication_flows()
+        assert [f["alias"] for f in result] == ["browser", "direct grant"]
+
+    def test_empty_list_is_returned_as_is(self, mock_api):
+        # A realm can legitimately return no flows to a service account with a
+        # narrow role; that is an answer, not an error.
+        mock_api.get(f"{ADMIN_BASE}/authentication/flows").mock(return_value=httpx.Response(200, json=[]))
+        assert KeyCloakClient().get_authentication_flows() == []
+
+
 class TestGetRealmRoles:
     def test_returns_roles(self, mock_api):
         roles = [{"name": "admin", "description": "Admin role"}]
