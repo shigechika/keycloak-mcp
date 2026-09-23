@@ -224,13 +224,28 @@ def test_cli_missing_env_is_a_config_error(fake, monkeypatch, capsys):
     def boom():
         raise KeyError("KEYCLOAK_CLIENT_SECRET")
 
-    monkeypatch.setattr(server, "_kc", boom)
+    monkeypatch.setattr(cli, "_kc", boom)
     monkeypatch.setattr(sys, "argv", ["keycloak-mcp", "spray-report", "--date", "2026-09-17", "--tz", "Asia/Tokyo"])
     with pytest.raises(SystemExit) as ex:
         cli.main()
     assert ex.value.code == 2
     out = capsys.readouterr()
     assert out.out == "" and "KEYCLOAK_CLIENT_SECRET" in out.err
+
+
+def test_cli_keyerror_after_setup_is_a_fetch_failure(fake, monkeypatch, capsys):
+    kc = fake()
+
+    def broken(*a, **kw):
+        raise KeyError("access_token")  # e.g. a proxy answering 200 without a token
+
+    monkeypatch.setattr(kc, "get_events_all", broken)
+    monkeypatch.setattr(cli, "_kc", lambda: kc)
+    monkeypatch.setattr(sys, "argv", ["keycloak-mcp", "spray-report", "--date", "2026-09-17", "--tz", "Asia/Tokyo"])
+    with pytest.raises(SystemExit) as ex:
+        cli.main()
+    assert ex.value.code == 1
+    assert capsys.readouterr().out == ""
 
 
 def test_no_arguments_still_starts_the_stdio_server(monkeypatch):

@@ -28,10 +28,16 @@ def _check_config() -> int:
 
 def _spray_report(args: argparse.Namespace) -> int:
     """Run ``spray-report``: JSON on stdout, diagnostics on stderr."""
+    import io
     import json
 
     from keycloak_mcp.server import SprayReportConfigError, spray_report
 
+    try:
+        _kc()  # KeyCloakClient reads the required env vars with os.environ[...]
+    except KeyError as e:
+        print(f"spray-report: missing environment variable {e}", file=sys.stderr)
+        return 2
     try:
         result = spray_report(
             args.date,
@@ -44,18 +50,17 @@ def _spray_report(args: argparse.Namespace) -> int:
     except SprayReportConfigError as e:
         print(f"spray-report: {e}", file=sys.stderr)
         return 2
-    except KeyError as e:  # KeyCloakClient reads required env vars with os.environ[...]
-        print(f"spray-report: missing environment variable {e}", file=sys.stderr)
-        return 2
     except Exception as e:  # network / auth failures: no partial JSON on stdout
         print(f"spray-report: failed: {e}", file=sys.stderr)
         return 1
-    # Encode the whole document first and write bytes: a redirected stdout on
+    # Stream UTF-8 regardless of the console code page: a redirected stdout on
     # Windows uses the ANSI code page, which cannot encode every username.
-    data = (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8")
     sys.stdout.flush()
-    sys.stdout.buffer.write(data)
-    sys.stdout.buffer.flush()
+    out = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
+    json.dump(result, out, ensure_ascii=False)
+    out.write("\n")
+    out.flush()
+    out.detach()
     return 0
 
 
