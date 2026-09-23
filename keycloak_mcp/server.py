@@ -1503,6 +1503,195 @@ def spray_check(
     return result
 
 
+SPRAY_REPORT_SCHEMA = "keycloak-mcp/spray-report/1"
+
+
+class SprayReportConfigError(Exception):
+    """Raised by :func:`spray_report` when its inputs make the result meaningless."""
+
+
+def _invalid_known_egress() -> list[str]:
+    """Return KEYCLOAK_KNOWN_EGRESS entries that do not parse as a CIDR.
+
+    ``_known_egress_networks`` skips them silently, which is fine for an
+    interactive tool but not for a report that is archived day by day.
+    """
+    bad = []
+    for cidr in _split_csv(os.environ.get("KEYCLOAK_KNOWN_EGRESS", "")):
+        try:
+            ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            bad.append(cidr)
+    return bad
+
+
+def _sha256_file(path: str) -> str | None:
+    import hashlib
+
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def spray_report(
+    day: str,
+    *,
+    tz: str = "",
+    deadline_seconds: float | None = 900.0,
+    max_events: int | None = 1_000_000,
+    min_users: int = 10,
+    max_success_rate: float = 0.2,
+    max_resolves: int = 2000,
+    max_user_success_rate: float = 0.2,
+    max_failure_concentration: float = 0.5,
+    require_sites: bool = True,
+) -> dict:
+    """Run the ``spray_check`` analysis over one calendar day, for archiving.
+
+    Unlike ``spray_check`` (a rolling window ending now, sized for a tool call),
+    this covers ``[day 00:00, day+1 00:00)`` in ``tz`` and is meant for a
+    scheduled batch job that keeps one file per day. It is not an MCP tool.
+
+    Events are fetched with ``dateFrom=day`` / ``dateTo=day+1`` and then cut to
+    the exact window by timestamp on both ends, so a KeyCloak that interprets
+    ``dateTo`` inclusively cannot leak the next day in. ``coverage`` reports the
+    first and last event seen and ``tail_gap_seconds`` (window end minus last
+    event); a large gap on a busy realm means the fetch did not reach the end
+    of the day even though pagination reported no truncation.
+
+    The per-IP rows are ``_spray_analysis`` with ``min_report_users=1``.
+    ``external_totals`` additionally counts every external IP's LOGIN /
+    LOGIN_ERROR events, including failures that carry no username (those are
+    invisible to the per-user rows).
+
+    :param day: ``YYYY-MM-DD``.
+    :param tz: IANA zone for the day boundary; empty = this host's local zone.
+        Use the zone the KeyCloak server logs in, since ``dateFrom``/``dateTo``
+        are interpreted there.
+    :param deadline_seconds: wall-clock budget for the whole fetch; ``None``
+        disables it. Deliberately not KEYCLOAK_DEADLINE, which is sized for a
+        tool call behind an HTTP gateway.
+    :param max_events: per-type cap; ``None`` disables it.
+    :param require_sites: raise :class:`SprayReportConfigError` when
+        KEYCLOAK_SITES_INI yields no ranges, instead of classifying every IP
+        as external.
+    :raises SprayReportConfigError: invalid ``day``/``tz``, missing sites
+        (when required) or an unparseable KEYCLOAK_KNOWN_EGRESS entry.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from keycloak_mcp import __version__
+
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise SprayReportConfigError(f"invalid date: {day!r}") from e
+    try:
+        zone = ZoneInfo(tz) if tz else datetime.now().astimezone().tzinfo
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise SprayReportConfigError(f"unknown time zone: {tz!r}") from e
+    start = datetime(d.year, d.month, d.day, tzinfo=zone)
+    end = start + timedelta(days=1)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+
+    sc = _site_classifier()
+    if require_sites and not sc.available:
+        raise SprayReportConfigError("KEYCLOAK_SITES_INI yields no ranges: every IP would be classified external")
+    bad_egress = _invalid_known_egress()
+    if bad_egress:
+        raise SprayReportConfigError(f"unparseable KEYCLOAK_KNOWN_EGRESS entries: {bad_egress}")
+
+    kc = _kc()
+    deadline = deadline_after(deadline_seconds) if deadline_seconds else None
+    date_from = d.isoformat()
+    date_to = (d + timedelta(days=1)).isoformat()
+    raw_success, s_trunc = kc.get_events_all(
+        "LOGIN", date_from=date_from, date_to=date_to, max_events=max_events, deadline=deadline
+    )
+    raw_failure, f_trunc = kc.get_events_all(
+        "LOGIN_ERROR", date_from=date_from, date_to=date_to, max_events=max_events, deadline=deadline
+    )
+
+    def _in_window(events: list[dict]) -> tuple[list[dict], int]:
+        kept = [e for e in events if start_ms <= int(e.get("time") or 0) < end_ms]
+        return kept, len(events) - len(kept)
+
+    success, s_out = _in_window(raw_success)
+    failure, f_out = _in_window(raw_failure)
+    times = [int(e.get("time") or 0) for e in success + failure]
+
+    def _resolve(uid: str) -> str | None:
+        if past_deadline(deadline):
+            raise _ResolveStopped
+        try:
+            return (kc.get_user_by_id(uid) or {}).get("username")
+        except Exception:
+            return None
+
+    result = _spray_analysis(
+        success,
+        failure,
+        since_ms=start_ms,
+        min_users=min_users,
+        max_success_rate=max_success_rate,
+        min_report_users=1,
+        resolve_username=_resolve,
+        is_internal=lambda ip: sc.classify(ip) is not None,
+        known_egress=_known_egress_networks(),
+        max_resolves=max_resolves,
+        max_user_success_rate=max_user_success_rate,
+        max_failure_concentration=max_failure_concentration,
+    )
+
+    totals: dict[str, dict] = {}
+    for kind, events in (("successes", success), ("failures", failure)):
+        for e in events:
+            ip = _normalize_ip(e.get("ipAddress", "unknown"))
+            if sc.classify(ip) is not None:
+                continue
+            row = totals.setdefault(ip, {"successes": 0, "failures": 0})
+            row[kind] += 1
+
+    unresolved = sum(r["unresolved_user_ids"] for r in result["external_ips"] if r["flagged"])
+    result.update(
+        {
+            "schema": SPRAY_REPORT_SCHEMA,
+            "keycloak_mcp_version": __version__,
+            "window": {
+                "date": d.isoformat(),
+                "tz": tz or str(zone),
+                "since": start.isoformat(timespec="seconds"),
+                "until": end.isoformat(timespec="seconds"),
+            },
+            "fetch_complete": not (s_trunc or f_trunc),
+            "resolve_complete": not result["resolve_capped"] and unresolved == 0,
+            "coverage": {
+                "success_events": len(success),
+                "failure_events": len(failure),
+                "dropped_outside_window": s_out + f_out,
+                "first_event": _format_iso(min(times)) if times else None,
+                "last_event": _format_iso(max(times)) if times else None,
+                "tail_gap_seconds": round((end_ms - max(times)) / 1000) if times else None,
+            },
+            "external_totals": totals,
+            "rule": {
+                "min_users": min_users,
+                "max_success_rate": max_success_rate,
+                "max_user_success_rate": max_user_success_rate,
+                "max_failure_concentration": max_failure_concentration,
+                "max_resolves": max_resolves,
+            },
+            "sites_configured": sc.available,
+            "sites_ini_sha256": _sha256_file(os.environ.get("KEYCLOAK_SITES_INI", "")),
+            "known_egress_configured": bool(os.environ.get("KEYCLOAK_KNOWN_EGRESS", "").strip()),
+        }
+    )
+    return result
+
+
 @mcp.tool()
 def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
     """Get login statistics broken down by client (SP).

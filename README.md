@@ -268,6 +268,21 @@ keycloak-mcp             # Run the MCP STDIO server (default)
 
 No-argument mode is the normal one — that's how MCP clients launch it.
 
+### Daily spray report (batch)
+
+`spray_check` looks at a rolling window ending now, which is right for a patrol but cannot be archived day by day. For that, run the same analysis over one calendar day from a scheduled job:
+
+```bash
+keycloak-mcp spray-report --date 2026-09-17 --tz Asia/Tokyo > 2026-09-17.json
+```
+
+- The window is `[DATE 00:00, DATE+1 00:00)` in `--tz` (default: the host's zone). Use the zone the KeyCloak server logs in, because `dateFrom` / `dateTo` are interpreted there. Events are cut to the window by timestamp on both ends.
+- One JSON document goes to stdout; errors go to stderr with a non-zero exit (2 = configuration, 1 = fetch/auth), and nothing is written to stdout in that case.
+- The output is the `spray_check` shape with every external IP listed (`min_report_users=1`), plus `external_totals` (per external IP LOGIN / LOGIN_ERROR counts, including failures that carry no username), `fetch_complete`, `resolve_complete`, `coverage` (`first_event`, `last_event`, `tail_gap_seconds`), `schema`, `keycloak_mcp_version` and `sites_ini_sha256`. Treat a day as final only when both `*_complete` flags are true.
+- It refuses to run when `KEYCLOAK_SITES_INI` yields no ranges (every IP would count as external) unless `--allow-no-sites` is given, and when `KEYCLOAK_KNOWN_EGRESS` has an entry that is not a CIDR.
+- Its own limits apply (`--deadline 900`, `--max-events 1000000`, `--max-resolves 2000`), not `KEYCLOAK_DEADLINE` / `KEYCLOAK_MAX_EVENTS`, which are sized for a tool call behind an HTTP gateway.
+- The output contains source IPs and usernames. Keep it out of anything published.
+
 ## Development
 
 ```bash
