@@ -44,11 +44,18 @@ def _spray_report(args: argparse.Namespace) -> int:
     except SprayReportConfigError as e:
         print(f"spray-report: {e}", file=sys.stderr)
         return 2
+    except KeyError as e:  # KeyCloakClient reads required env vars with os.environ[...]
+        print(f"spray-report: missing environment variable {e}", file=sys.stderr)
+        return 2
     except Exception as e:  # network / auth failures: no partial JSON on stdout
         print(f"spray-report: failed: {e}", file=sys.stderr)
         return 1
-    json.dump(result, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+    # Encode the whole document first and write bytes: a redirected stdout on
+    # Windows uses the ANSI code page, which cannot encode every username.
+    data = (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8")
+    sys.stdout.flush()
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
     return 0
 
 

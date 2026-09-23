@@ -273,7 +273,7 @@ keycloak-mcp spray-report --date 2026-09-17 --tz Asia/Tokyo > 2026-09-17.json
 
 - 窓は `--tz`（既定はホストのゾーン）での `[DATE 00:00, DATE+1 00:00)`。`dateFrom` / `dateTo` は KeyCloak サーバのゾーンで解釈されるので、同じゾーンを指定する。取得後にタイムスタンプで両端を切る
 - 標準出力には JSON を 1 つだけ出す。エラーは標準エラーに出して非 0 で終わり（2 = 設定、1 = 取得・認証）、そのときは標準出力に何も書かない
-- 中身は `spray_check` と同じ形で、外部 IP を全件（`min_report_users=1`）載せ、加えて `external_totals`（外部 IP ごとの LOGIN / LOGIN_ERROR 件数。ユーザー名の無い失敗も数える）・`fetch_complete`・`resolve_complete`・`coverage`（`first_event`・`last_event`・`head_gap_seconds`・`tail_gap_seconds`）・`schema`・`keycloak_mcp_version`・`sites_ini_sha256` を持つ。両方の `*_complete` が true で、どちらの端の欠けも小さい日だけを確定値として扱う。片方の端だけ大きく欠けるのは、たいてい `--tz` が KeyCloak サーバのゾーンと違うとき
+- 中身は `spray_check` と同じ形で、ユーザー名の付いたイベントが 1 件でもある外部 IP を `external_ips` に全件（`min_report_users=1`）載せる。加えて `external_totals` は**すべての**外部 IP の LOGIN / LOGIN_ERROR 件数を持つ（ユーザー名の無い失敗しか無く `external_ips` に行が無い IP も含む）・`fetch_complete`・`resolve_complete`・`coverage`（`first_event`・`last_event`・`head_gap_seconds`・`tail_gap_seconds`）・`schema`・`keycloak_mcp_version`・`sites_ini_sha256` を持つ。両方の `*_complete` が true で、どちらの端の欠けも小さい日だけを確定値として扱う。片方の端だけ大きく欠けるのは、たいてい `--tz` が KeyCloak サーバのゾーンと違うとき
 - `KEYCLOAK_SITES_INI` から範囲が 1 つも読めないとき（全 IP が外部扱いになる）は `--allow-no-sites` が無い限り実行しない。`KEYCLOAK_KNOWN_EGRESS` に CIDR として読めない値があるときも実行しない
 - 上限は専用の値（`--deadline 900`・`--max-events 1000000`・`--max-resolves 2000`）。HTTP ゲートウェイ越しのツール呼び出し向けの `KEYCLOAK_DEADLINE` / `KEYCLOAK_MAX_EVENTS` は使わない
 - 出力には送信元 IP とユーザー名が入る。公開するものに含めないこと

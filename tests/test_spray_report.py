@@ -207,6 +207,32 @@ def test_cli_config_error_writes_nothing_to_stdout(fake, monkeypatch, capsys):
     assert out.out == "" and "SITES" in out.err
 
 
+def test_cli_writes_utf8_bytes(fake, monkeypatch, capsysbinary):
+    fake(failure=[fail("203.0.113.1", "用户@example.com", ms(2026, 9, 17, 1))])
+    monkeypatch.setattr(sys, "argv", ["keycloak-mcp", "spray-report", "--date", "2026-09-17", "--tz", "Asia/Tokyo"])
+    with pytest.raises(SystemExit) as ex:
+        cli.main()
+    assert ex.value.code == 0
+    out = capsysbinary.readouterr().out
+    assert "用户@example.com".encode() in out
+    assert json.loads(out.decode("utf-8"))["external_ips"][0]["top_failed_users"][0]["username"] == "用户@example.com"
+
+
+def test_cli_missing_env_is_a_config_error(fake, monkeypatch, capsys):
+    fake()
+
+    def boom():
+        raise KeyError("KEYCLOAK_CLIENT_SECRET")
+
+    monkeypatch.setattr(server, "_kc", boom)
+    monkeypatch.setattr(sys, "argv", ["keycloak-mcp", "spray-report", "--date", "2026-09-17", "--tz", "Asia/Tokyo"])
+    with pytest.raises(SystemExit) as ex:
+        cli.main()
+    assert ex.value.code == 2
+    out = capsys.readouterr()
+    assert out.out == "" and "KEYCLOAK_CLIENT_SECRET" in out.err
+
+
 def test_no_arguments_still_starts_the_stdio_server(monkeypatch):
     called = {}
     monkeypatch.setattr(cli.mcp, "run", lambda transport: called.setdefault("transport", transport))

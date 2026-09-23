@@ -1564,10 +1564,10 @@ def spray_report(
     realm a large gap at either end is how that shows up, even though
     pagination reported no truncation.
 
-    The per-IP rows are ``_spray_analysis`` with ``min_report_users=1``.
-    ``external_totals`` additionally counts every external IP's LOGIN /
-    LOGIN_ERROR events, including failures that carry no username (those are
-    invisible to the per-user rows).
+    The per-IP rows are ``_spray_analysis`` with ``min_report_users=1``, so an
+    IP whose failures all lack a username has no row at all.
+    ``external_totals`` counts LOGIN / LOGIN_ERROR for every external IP,
+    those included.
 
     :param day: ``YYYY-MM-DD``.
     :param tz: IANA zone for the day boundary; empty = this host's local zone.
