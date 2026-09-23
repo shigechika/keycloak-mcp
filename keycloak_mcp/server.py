@@ -1557,9 +1557,12 @@ def spray_report(
     Events are fetched with ``dateFrom=day`` / ``dateTo=day+1`` and then cut to
     the exact window by timestamp on both ends, so a KeyCloak that interprets
     ``dateTo`` inclusively cannot leak the next day in. ``coverage`` reports the
-    first and last event seen and ``tail_gap_seconds`` (window end minus last
-    event); a large gap on a busy realm means the fetch did not reach the end
-    of the day even though pagination reported no truncation.
+    first and last event seen, ``head_gap_seconds`` (first event minus window
+    start) and ``tail_gap_seconds`` (window end minus last event). KeyCloak
+    interprets ``dateFrom``/``dateTo`` in the server's zone, so when ``tz``
+    differs from it one end of the day is silently not fetched; on a busy
+    realm a large gap at either end is how that shows up, even though
+    pagination reported no truncation.
 
     The per-IP rows are ``_spray_analysis`` with ``min_report_users=1``.
     ``external_totals`` additionally counts every external IP's LOGIN /
@@ -1681,6 +1684,7 @@ def spray_report(
                 "dropped_outside_window": s_out + f_out,
                 "first_event": _format_iso(min(times)) if times else None,
                 "last_event": _format_iso(max(times)) if times else None,
+                "head_gap_seconds": round((min(times) - start_ms) / 1000) if times else None,
                 "tail_gap_seconds": round((end_ms - max(times)) / 1000) if times else None,
             },
             "external_totals": totals,

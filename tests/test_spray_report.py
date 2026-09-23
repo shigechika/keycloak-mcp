@@ -79,6 +79,7 @@ def test_window_is_half_open_on_both_ends(fake):
     assert r["window"]["since"] == "2026-09-17T00:00:00+09:00"
     assert r["window"]["until"] == "2026-09-18T00:00:00+09:00"
     assert r["coverage"]["tail_gap_seconds"] == 0
+    assert r["coverage"]["head_gap_seconds"] == 0
     # KeyCloak is asked for the day and the next one, exclusive end
     assert kc.calls[0][1]["date_from"] == "2026-09-17"
     assert kc.calls[0][1]["date_to"] == "2026-09-18"
@@ -89,6 +90,16 @@ def test_window_follows_tz_not_host_zone(fake):
     fake(failure=[fail("203.0.113.1", "a", ms(2026, 9, 17, 0, 30))])
     assert server.spray_report("2026-09-17", tz="UTC")["coverage"]["failure_events"] == 0
     assert server.spray_report("2026-09-16", tz="UTC")["coverage"]["failure_events"] == 1
+
+
+def test_zone_mismatch_shows_as_head_gap(fake):
+    # KeyCloak in UTC answers dateFrom=09-17 from 09:00 JST: the first nine hours never arrive
+    fake(
+        failure=[fail("203.0.113.1", "a", ms(2026, 9, 17, 9, 0, 5)), fail("203.0.113.1", "b", ms(2026, 9, 17, 23, 59))]
+    )
+    cov = server.spray_report("2026-09-17", tz="Asia/Tokyo")["coverage"]
+    assert cov["head_gap_seconds"] == 9 * 3600 + 5
+    assert cov["tail_gap_seconds"] == 60
 
 
 def test_totals_count_failures_without_username(fake):
