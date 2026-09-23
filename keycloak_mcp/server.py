@@ -1588,12 +1588,19 @@ def spray_report(
         d = datetime.strptime(day, "%Y-%m-%d").date()
     except ValueError as e:
         raise SprayReportConfigError(f"invalid date: {day!r}") from e
-    try:
-        zone = ZoneInfo(tz) if tz else datetime.now().astimezone().tzinfo
-    except (ZoneInfoNotFoundError, ValueError) as e:
-        raise SprayReportConfigError(f"unknown time zone: {tz!r}") from e
-    start = datetime(d.year, d.month, d.day, tzinfo=zone)
-    end = start + timedelta(days=1)
+    nxt = d + timedelta(days=1)
+    if tz:
+        try:
+            zone = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise SprayReportConfigError(f"unknown time zone: {tz!r}") from e
+        start = datetime(d.year, d.month, d.day, tzinfo=zone)
+        end = datetime(nxt.year, nxt.month, nxt.day, tzinfo=zone)
+    else:
+        # Resolve each boundary with the host's rules for that date, not today's
+        # fixed offset, so a day across a DST change is 23 or 25 hours long.
+        start = datetime(d.year, d.month, d.day).astimezone()
+        end = datetime(nxt.year, nxt.month, nxt.day).astimezone()
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
 
@@ -1607,7 +1614,7 @@ def spray_report(
     kc = _kc()
     deadline = deadline_after(deadline_seconds) if deadline_seconds else None
     date_from = d.isoformat()
-    date_to = (d + timedelta(days=1)).isoformat()
+    date_to = nxt.isoformat()
     raw_success, s_trunc = kc.get_events_all(
         "LOGIN", date_from=date_from, date_to=date_to, max_events=max_events, deadline=deadline
     )
@@ -1662,7 +1669,7 @@ def spray_report(
             "keycloak_mcp_version": __version__,
             "window": {
                 "date": d.isoformat(),
-                "tz": tz or str(zone),
+                "tz": tz or "local",
                 "since": start.isoformat(timespec="seconds"),
                 "until": end.isoformat(timespec="seconds"),
             },

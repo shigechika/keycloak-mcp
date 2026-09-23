@@ -138,6 +138,30 @@ def test_missing_sites_is_an_error(fake):
     assert server.spray_report("2026-09-17", tz="Asia/Tokyo", require_sites=False)["sites_configured"] is False
 
 
+def test_tz_day_across_dst_is_not_24_hours(fake):
+    fake()
+    r = server.spray_report("2026-03-08", tz="America/New_York")
+    assert r["window"]["since"] == "2026-03-08T00:00:00-05:00"
+    assert r["window"]["until"] == "2026-03-09T00:00:00-04:00"
+
+
+def test_local_zone_uses_rules_for_that_date(fake, monkeypatch):
+    import time
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is POSIX-only")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        fake()
+        # reporting a January day from any season must use EST (-05:00)
+        assert server.spray_report("2026-01-15")["window"]["since"] == "2026-01-15T00:00:00-05:00"
+        assert server.spray_report("2026-03-08")["window"]["until"] == "2026-03-09T00:00:00-04:00"
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_bad_known_egress_is_an_error(fake, monkeypatch):
     fake()
     monkeypatch.setenv("KEYCLOAK_KNOWN_EGRESS", "192.0.2.0/24,not-a-cidr")
