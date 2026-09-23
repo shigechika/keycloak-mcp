@@ -26,6 +26,47 @@ def _check_config() -> int:
     return 0
 
 
+def _spray_report(args: argparse.Namespace) -> int:
+    """Run ``spray-report``: JSON on stdout, diagnostics on stderr."""
+    import io
+    import json
+
+    from keycloak_mcp.server import SprayReportConfigError, spray_report
+
+    try:
+        _kc()  # KeyCloakClient reads the required env vars with os.environ[...]
+    except KeyError as e:
+        print(f"spray-report: missing environment variable {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # e.g. an unreadable CA bundle
+        print(f"spray-report: failed: {e}", file=sys.stderr)
+        return 1
+    try:
+        result = spray_report(
+            args.date,
+            tz=args.tz,
+            deadline_seconds=args.deadline if args.deadline > 0 else None,
+            max_events=args.max_events if args.max_events > 0 else None,
+            max_resolves=args.max_resolves,
+            require_sites=not args.allow_no_sites,
+        )
+    except SprayReportConfigError as e:
+        print(f"spray-report: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # network / auth failures: no partial JSON on stdout
+        print(f"spray-report: failed: {e}", file=sys.stderr)
+        return 1
+    # Stream UTF-8 regardless of the console code page: a redirected stdout on
+    # Windows uses the ANSI code page, which cannot encode every username.
+    sys.stdout.flush()
+    out = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
+    json.dump(result, out, ensure_ascii=False)
+    out.write("\n")
+    out.flush()
+    out.detach()
+    return 0
+
+
 def main() -> None:
     """Entry point for console_scripts."""
     parser = argparse.ArgumentParser(
@@ -52,10 +93,37 @@ def main() -> None:
         action="store_true",
         help="Verify environment variables and authentication, then exit.",
     )
+    sub = parser.add_subparsers(dest="command")
+    sp = sub.add_parser(
+        "spray-report",
+        help="Write the spray_check analysis for one calendar day as JSON to stdout, then exit.",
+        description=(
+            "Batch counterpart of the spray_check tool: covers [DATE 00:00, DATE+1 00:00) "
+            "in --tz and prints one JSON document to stdout. Meant for a scheduled job "
+            "that archives one file per day; does not start the MCP server."
+        ),
+    )
+    sp.add_argument("--date", required=True, help="Day to analyse (YYYY-MM-DD).")
+    sp.add_argument("--tz", default="", help="IANA zone for the day boundary (default: host local zone).")
+    sp.add_argument(
+        "--deadline", type=float, default=900.0, help="Wall-clock budget in seconds; 0 disables (default 900)."
+    )
+    sp.add_argument(
+        "--max-events", type=int, default=1_000_000, help="Per-type event cap; 0 disables (default 1000000)."
+    )
+    sp.add_argument("--max-resolves", type=int, default=2000, help="Cap on userId lookups (default 2000).")
+    sp.add_argument(
+        "--allow-no-sites",
+        action="store_true",
+        help="Run even when KEYCLOAK_SITES_INI yields no ranges (every IP is then external).",
+    )
     args = parser.parse_args()
 
     if args.check:
         sys.exit(_check_config())
+
+    if args.command == "spray-report":
+        sys.exit(_spray_report(args))
 
     # On Windows, the MCP SDK creates TextIOWrapper(sys.stdout.buffer) with the
     # default newline=None, which translates \n → \r\n and corrupts the NDJSON
