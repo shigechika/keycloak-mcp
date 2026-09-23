@@ -38,6 +38,9 @@ def _spray_report(args: argparse.Namespace) -> int:
     except KeyError as e:
         print(f"spray-report: missing environment variable {e}", file=sys.stderr)
         return 2
+    except Exception as e:  # e.g. an unreadable CA bundle
+        print(f"spray-report: failed: {e}", file=sys.stderr)
+        return 1
     try:
         result = spray_report(
             args.date,

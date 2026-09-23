@@ -233,6 +233,21 @@ def test_cli_missing_env_is_a_config_error(fake, monkeypatch, capsys):
     assert out.out == "" and "KEYCLOAK_CLIENT_SECRET" in out.err
 
 
+def test_cli_client_setup_failure_is_reported(fake, monkeypatch, capsys):
+    fake()
+
+    def boom():
+        raise FileNotFoundError("missing CA bundle")
+
+    monkeypatch.setattr(cli, "_kc", boom)
+    monkeypatch.setattr(sys, "argv", ["keycloak-mcp", "spray-report", "--date", "2026-09-17"])
+    with pytest.raises(SystemExit) as ex:
+        cli.main()
+    assert ex.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == "" and "missing CA bundle" in out.err
+
+
 def test_cli_keyerror_after_setup_is_a_fetch_failure(fake, monkeypatch, capsys):
     kc = fake()
 
