@@ -36,7 +36,7 @@ class FakeKC:
         self.calls.append((event_type, kw))
         return list(self.events[event_type]), self.truncated
 
-    def get_user_by_id(self, uid):
+    def get_user_by_id(self, uid, deadline=None):
         return {"username": self.users[uid]} if uid in self.users else None
 
 

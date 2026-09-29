@@ -11,6 +11,15 @@ from .auth import TokenManager
 # failures. Everything else (400/401/403/404, …) is re-raised immediately.
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 _MAX_ATTEMPTS = 5
+_REQUEST_TIMEOUT = 30.0
+_TOKEN_TIMEOUT = 10.0
+_MIN_REQUEST_TIMEOUT = 0.05  # httpx needs a positive timeout; keeps the overrun negligible
+
+
+class DeadlineExceeded(Exception):
+    """Raised when a request cannot start or finish before the caller's deadline."""
+
+
 _BACKOFF_BASE = 0.5
 
 
@@ -38,7 +47,15 @@ class KeyCloakClient:
         self.auth = TokenManager()
         self._http = httpx.Client(timeout=30)
 
-    def _send(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None) -> httpx.Response:
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json: dict | None = None,
+        deadline: float | None = None,
+    ) -> httpx.Response:
         """Send a request with retry on transient failures.
 
         Retries on ``httpx.TransportError`` (connection drops, timeouts,
@@ -51,17 +68,40 @@ class KeyCloakClient:
         too; httpx auto-reconnects on the next request after a drop.
 
         Backoff is exponential: ``0.5 * 2**attempt`` seconds (0.5, 1, 2, 4).
+
+        With ``deadline`` (an absolute ``time.monotonic()`` timestamp) each attempt's
+        timeout is capped at the time remaining (measured after the token is
+        obtained), and no attempt or
+        backoff starts past it: :class:`DeadlineExceeded` is raised instead, so one
+        slow page cannot run a tool far beyond its budget.
         """
         url = f"{self.auth.admin_base}{path}"
         last_exc: Exception | None = None
         for attempt in range(_MAX_ATTEMPTS):
+            timeout = _REQUEST_TIMEOUT
             try:
+                # Token first (a refresh can itself use up the budget, so the remaining time
+                # is read only after it), but check the budget before refreshing and bound
+                # the refresh request by it.
+                token_timeout = _TOKEN_TIMEOUT
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DeadlineExceeded(f"deadline passed before {method} {path}") from last_exc
+                    token_timeout = min(_TOKEN_TIMEOUT, max(remaining, _MIN_REQUEST_TIMEOUT))
+                headers = self.auth.headers(token_timeout)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DeadlineExceeded(f"deadline passed before {method} {path}") from last_exc
+                    timeout = min(_REQUEST_TIMEOUT, max(remaining, _MIN_REQUEST_TIMEOUT))
                 resp = self._http.request(
                     method,
                     url,
-                    headers=self.auth.headers(),
+                    headers=headers,
                     params=params or {},
                     json=json,
+                    timeout=timeout,
                 )
                 resp.raise_for_status()
                 return resp
@@ -72,13 +112,20 @@ class KeyCloakClient:
             except httpx.TransportError as exc:
                 last_exc = exc
             if attempt < _MAX_ATTEMPTS - 1:
-                time.sleep(_BACKOFF_BASE * 2**attempt)
+                backoff = _BACKOFF_BASE * 2**attempt
+                if deadline is not None and time.monotonic() + backoff >= deadline:
+                    raise DeadlineExceeded(f"deadline reached while retrying {method} {path}") from last_exc
+                time.sleep(backoff)
         assert last_exc is not None
+        if deadline is not None and time.monotonic() >= deadline:
+            # The last attempt started in time but ended past the deadline: report it as
+            # the deadline (a disclosed partial for the paging callers), not a transport error.
+            raise DeadlineExceeded(f"deadline passed during the last attempt of {method} {path}") from last_exc
         raise last_exc
 
-    def _get(self, path: str, params: dict | None = None) -> Any:
-        """GET request to Admin API."""
-        return self._send("GET", path, params=params).json()
+    def _get(self, path: str, params: dict | None = None, deadline: float | None = None) -> Any:
+        """GET request to Admin API (optionally bounded by an absolute monotonic ``deadline``)."""
+        return self._send("GET", path, params=params, deadline=deadline).json()
 
     def _put(self, path: str, json: dict | None = None) -> int:
         """PUT request to Admin API. Returns status code."""
@@ -127,7 +174,10 @@ class KeyCloakClient:
         while True:
             if past_deadline(deadline):
                 return all_items, True
-            page = self._get(path, params)
+            try:
+                page = self._get(path, params, deadline=deadline)
+            except DeadlineExceeded:
+                return all_items, True
             all_items.extend(page)
             drained = len(page) < page_size  # a short page means the endpoint is exhausted
             if max_total is not None and len(all_items) >= max_total:
@@ -173,13 +223,14 @@ class KeyCloakClient:
             params["enabled"] = "true"
         return self._paginate("/users", params, page_size, max_total=limit, deadline=deadline)
 
-    def get_user_credentials(self, user_id: str) -> list[dict]:
+    def get_user_credentials(self, user_id: str, deadline: float | None = None) -> list[dict]:
         """Get a user's configured credentials (password, otp, webauthn, …).
 
         Each entry has a ``type`` field; ``"otp"`` means TOTP/HOTP is configured.
-        Read-only — does not create a user session.
+        Read-only — does not create a user session. ``deadline`` (absolute monotonic
+        time) bounds the request; :class:`DeadlineExceeded` is raised past it.
         """
-        return self._get(f"/users/{user_id}/credentials")
+        return self._get(f"/users/{user_id}/credentials", deadline=deadline)
 
     def get_user_by_username(self, username: str) -> dict | None:
         """Get user by exact username. Returns None if not found.
@@ -190,14 +241,14 @@ class KeyCloakClient:
         users = self._get("/users", {"username": username, "exact": "true"})
         return users[0] if users else None
 
-    def get_user_by_id(self, user_id: str) -> dict:
+    def get_user_by_id(self, user_id: str, deadline: float | None = None) -> dict:
         """Get the full user representation by ID, including custom ``attributes``.
 
         Unlike :meth:`get_user_by_username` (which hits the brief-representation
         search endpoint), ``GET /users/{id}`` always returns the complete
-        representation.
+        representation. ``deadline`` (absolute monotonic time) bounds the request.
         """
-        return self._get(f"/users/{user_id}")
+        return self._get(f"/users/{user_id}", deadline=deadline)
 
     def reset_password(self, user_id: str, password: str, temporary: bool = False) -> int:
         """Reset a user's password."""
