@@ -32,7 +32,7 @@ Plain-`pip` equivalents are documented in README.md's Development section.
   exponential backoff; `_paginate` pages list endpoints.
 - `keycloak_mcp/sites.py` — `SiteClassifier`: labels IPs with a site name
   from an optional `KEYCLOAK_SITES_INI` file.
-- `keycloak_mcp/server.py` — `FastMCP` server; all `@mcp.tool()` functions.
+- `keycloak_mcp/server.py` — `MCPServer` (mcp 2.x) server; all `@mcp.tool()` functions.
 - `keycloak_mcp/__main__.py` — CLI entry point (`--check`, `--version`)
   plus a Windows-only stdout wrapper that strips CRLF back to LF.
 

@@ -14,14 +14,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-try:  # mcp 2.x renamed FastMCP to MCPServer
-    from mcp.server.mcpserver import MCPServer as FastMCP
-
-    MCP_SDK_MAJOR = 2
-except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP
-
-    MCP_SDK_MAJOR = 1
+from mcp.server.mcpserver import MCPServer
 
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .sites import SiteClassifier
@@ -176,13 +169,9 @@ def _with_warning(text: str, truncated: bool) -> str:
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
 
 
-if MCP_SDK_MAJOR >= 2:
-    # 2.x takes the version for serverInfo here (1.x reports the SDK's own).
-    from keycloak_mcp import __version__ as _version
+from keycloak_mcp import __version__ as _version
 
-    mcp = FastMCP("keycloak-mcp", version=_version)
-else:
-    mcp = FastMCP("keycloak-mcp")
+mcp = MCPServer("keycloak-mcp", version=_version)
 _client: KeyCloakClient | None = None
 _sites: SiteClassifier | None = None
 

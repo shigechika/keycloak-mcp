@@ -5,7 +5,7 @@ KeyCloak Admin REST API — users, sessions, events, security settings —
 to AI assistants over **stdio transport**. It authenticates as a Service
 Account (Client Credentials Grant, `keycloak_mcp/auth.py`) and talks to
 the Admin API via `KeyCloakClient` (`keycloak_mcp/client.py`). Built on
-the official `mcp` Python SDK's `FastMCP` (`keycloak_mcp/server.py`).
+the official `mcp` Python SDK's `MCPServer` (2.x, `keycloak_mcp/server.py`).
 
 See `CLAUDE.md` for the authoritative command list and architecture
 notes — read it before reviewing changes to `client.py`, `auth.py`, or
@@ -43,10 +43,10 @@ shares the stream with JSON-RPC traffic. Flag any *new* code path that
 writes to stdout on the `mcp.run(transport="stdio")` side, or that lets
 a dependency's default logging config leak through.
 
-## 2. FastMCP already wraps tool returns — don't ask for manual envelope code
+## 2. MCPServer already wraps tool returns — don't ask for manual envelope code
 
 `server.py`'s `@mcp.tool()` functions return plain `str`/`dict` values;
-FastMCP handles the MCP content-envelope wrapping and derives `isError`
+MCPServer handles the MCP content-envelope wrapping and derives the error flag
 from raised exceptions. Do **not** suggest a tool handler manually
 build `{"content": [...], "isError": ...}`. Broad `except Exception`
 blocks that catch-and-continue (`get_totp_users` skipping a user whose
