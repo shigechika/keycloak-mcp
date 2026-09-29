@@ -67,6 +67,31 @@ def _spray_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _serve_stdio_lf() -> None:
+    """Serve stdio with an LF-only stdout (Windows).
+
+    The SDK's stdio transport wraps stdout with the default newline handling, which
+    turns \\n into \\r\\n and corrupts the NDJSON wire format
+    (modelcontextprotocol/python-sdk#2433). mcp 2.x also claims a duplicate of fd 1, so
+    replacing sys.stdout no longer helps; pass our own stream to ``stdio_server``.
+    """
+    import io
+
+    import anyio
+    from mcp.server.stdio import stdio_server
+
+    async def _run() -> None:
+        out = anyio.wrap_file(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n"))
+        async with stdio_server(stdout=out) as (read_stream, write_stream):
+            low = mcp._lowlevel_server
+            await low.run(read_stream, write_stream, low.create_initialization_options())
+
+    try:
+        anyio.run(_run)
+    except KeyboardInterrupt:
+        os._exit(0)
+
+
 def main() -> None:
     """Entry point for console_scripts."""
     parser = argparse.ArgumentParser(
@@ -125,25 +150,8 @@ def main() -> None:
     if args.command == "spray-report":
         sys.exit(_spray_report(args))
 
-    # On Windows the SDK's stdio transport wraps stdout with the default newline
-    # handling, which turns \n into \r\n and corrupts the NDJSON wire format
-    # (modelcontextprotocol/python-sdk#2433). Pass our own LF-only stream instead.
     if sys.platform == "win32":
-        import io
-
-        import anyio
-        from mcp.server.stdio import stdio_server
-
-        async def _serve_stdio_lf() -> None:
-            out = anyio.wrap_file(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n"))
-            async with stdio_server(stdout=out) as (read_stream, write_stream):
-                low = mcp._lowlevel_server
-                await low.run(read_stream, write_stream, low.create_initialization_options())
-
-        try:
-            anyio.run(_serve_stdio_lf)
-        except KeyboardInterrupt:
-            os._exit(0)
+        _serve_stdio_lf()
         return
 
     try:

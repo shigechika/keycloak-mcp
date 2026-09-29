@@ -266,6 +266,8 @@ def test_cli_keyerror_after_setup_is_a_fetch_failure(fake, monkeypatch, capsys):
 def test_no_arguments_still_starts_the_stdio_server(monkeypatch):
     called = {}
     monkeypatch.setattr(cli.mcp, "run", lambda transport: called.setdefault("transport", transport))
+    # Windows serves stdio through its own LF-only helper instead of mcp.run().
+    monkeypatch.setattr(cli, "_serve_stdio_lf", lambda: called.setdefault("transport", "stdio"))
     monkeypatch.setattr(sys, "argv", ["keycloak-mcp"])
     cli.main()
     assert called == {"transport": "stdio"}
