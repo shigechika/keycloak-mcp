@@ -241,14 +241,14 @@ class KeyCloakClient:
         users = self._get("/users", {"username": username, "exact": "true"})
         return users[0] if users else None
 
-    def get_user_by_id(self, user_id: str) -> dict:
+    def get_user_by_id(self, user_id: str, deadline: float | None = None) -> dict:
         """Get the full user representation by ID, including custom ``attributes``.
 
         Unlike :meth:`get_user_by_username` (which hits the brief-representation
         search endpoint), ``GET /users/{id}`` always returns the complete
-        representation.
+        representation. ``deadline`` (absolute monotonic time) bounds the request.
         """
-        return self._get(f"/users/{user_id}")
+        return self._get(f"/users/{user_id}", deadline=deadline)
 
     def reset_password(self, user_id: str, password: str, temporary: bool = False) -> int:
         """Reset a user's password."""

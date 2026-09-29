@@ -1087,10 +1087,9 @@ def get_login_stats(date_from: str = "", date_to: str = "") -> str:
     """Get login success/failure statistics with full pagination.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The result then starts with a "PARTIAL RESULT" warning.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
@@ -1119,10 +1118,9 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
     """Get login statistics broken down by hour (local time).
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The result then starts with a "PARTIAL RESULT" warning.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
@@ -1162,10 +1160,9 @@ def get_login_failures_by_ip(date_from: str = "", date_to: str = "", top: int = 
     """Get login failure statistics broken down by source IP.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The result then starts with a "PARTIAL RESULT" warning.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
@@ -1258,10 +1255,9 @@ def get_ip_activity(
             scan. Narrow date_from when this is true.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The returned dict then has ``events_capped: true`` (no warning text); narrow date_from / date_to.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         ip_address: Source IP to investigate. Compared against KeyCloak's
@@ -1467,10 +1463,9 @@ def spray_check(
     never past the shared KEYCLOAK_DEADLINE.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The returned dict then has ``complete: false`` (no warning text); use a smaller ``hours``.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         hours: Look-back window (default 24 — sized for a once-a-day patrol).
@@ -1498,7 +1493,9 @@ def spray_check(
         if past_deadline(deadline):
             raise _ResolveStopped
         try:
-            return (kc.get_user_by_id(uid) or {}).get("username")
+            return (kc.get_user_by_id(uid, deadline=deadline) or {}).get("username")
+        except DeadlineExceeded:
+            raise _ResolveStopped
         except Exception:
             return None
 
@@ -1671,7 +1668,9 @@ def spray_report(
         if past_deadline(deadline):
             raise _ResolveStopped
         try:
-            return (kc.get_user_by_id(uid) or {}).get("username")
+            return (kc.get_user_by_id(uid, deadline=deadline) or {}).get("username")
+        except DeadlineExceeded:
+            raise _ResolveStopped
         except Exception:
             return None
 
@@ -1742,10 +1741,9 @@ def get_login_stats_by_client(date_from: str = "", date_to: str = "") -> str:
     """Get login statistics broken down by client (SP).
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The result then starts with a "PARTIAL RESULT" warning.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
@@ -1781,10 +1779,9 @@ def detect_login_loops(
     times within `window_seconds`.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has, starting with a "PARTIAL RESULT" warning. The counts are then
-    a lower bound. When you see that warning, call again with a narrower window
-    (for example date_from = today or a few hours, not a week) instead of retrying
-    the same call. A wide window on a busy day is what triggers it.
+    returns what it has; the counts are then a lower bound. The result then starts with a "PARTIAL RESULT" warning.
+    Call again with a narrower window instead of retrying the same call. A wide window
+    on a busy day is what triggers it.
 
     Args:
         date_from: Start date (YYYY-MM-DD). Defaults to last 24h when omitted (KEYCLOAK_DEFAULT_DATE_FROM_HOURS).
@@ -2276,7 +2273,9 @@ def daily_brief(
         if past_deadline(deadline):
             raise _ResolveStopped
         try:
-            return (kc.get_user_by_id(uid) or {}).get("username")
+            return (kc.get_user_by_id(uid, deadline=deadline) or {}).get("username")
+        except DeadlineExceeded:
+            raise _ResolveStopped
         except Exception:
             return None
 

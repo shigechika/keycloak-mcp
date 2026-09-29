@@ -403,6 +403,13 @@ class TestGetEventsAll:
         kc._get("/events", deadline=time.monotonic() + 2.0)
         assert token.calls.last.request.extensions["timeout"]["read"] <= 2.0
 
+    def test_user_by_id_lookup_is_bounded_by_the_deadline(self, mock_api):
+        import time
+
+        mock_api.get(f"{ADMIN_BASE}/users/u1").mock(side_effect=httpx.ReadTimeout("slow"))
+        with pytest.raises(client_mod.DeadlineExceeded):
+            KeyCloakClient().get_user_by_id("u1", deadline=time.monotonic() + 0.8)
+
     def test_send_raises_deadline_exceeded_when_already_past(self, mock_api):
         with pytest.raises(client_mod.DeadlineExceeded):
             KeyCloakClient()._get("/events", deadline=0.0)
