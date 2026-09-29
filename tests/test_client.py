@@ -8,7 +8,7 @@ import pytest
 import keycloak_mcp.client as client_mod
 from keycloak_mcp.client import KeyCloakClient, deadline_after, past_deadline
 
-from .conftest import ADMIN_BASE, SAMPLE_USER, SAMPLE_USER_2
+from .conftest import ADMIN_BASE, SAMPLE_USER, SAMPLE_USER_2, TOKEN_ENDPOINT
 
 
 class TestDeadlineHelpers:
@@ -319,8 +319,9 @@ class TestGetEventsAll:
     def test_deadline_stops_paging_between_pages(self, mock_api, monkeypatch):
         # Full pages would page forever; a deadline already in the past on the 2nd
         # loop iteration must stop paging and report a disclosed partial.
-        # deadline_after start, 1st check, the request's remaining-time read, 2nd check (past)
-        clock = iter([1000.0, 1000.0, 1000.0, 9999.0])
+        # deadline_after start, 1st check, the request's two remaining-time reads (before and
+        # after the token), 2nd check (past)
+        clock = iter([1000.0, 1000.0, 1000.0, 1000.0, 9999.0])
         monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: next(clock, 9999.0))
         # A single full page via side_effect (not return_value): if the deadline guard were
         # removed the loop would try to fetch a 2nd page and raise StopIteration — a fast, clean
@@ -375,6 +376,32 @@ class TestGetEventsAll:
         with pytest.raises(client_mod.DeadlineExceeded):
             KeyCloakClient().get_user_credentials("u1", deadline=time.monotonic() + 0.8)
         assert time.monotonic() - started < 3.0
+
+    def test_final_attempt_ending_past_the_deadline_is_reported_as_the_deadline(self, mock_api, monkeypatch):
+        import time
+
+        monkeypatch.setattr(client_mod, "_MAX_ATTEMPTS", 1)  # the only attempt is the final one
+        deadline = time.monotonic() + 0.05
+
+        def slow_then_fail(request):
+            time.sleep(0.1)  # the attempt starts in time but ends past the deadline
+            raise httpx.ReadTimeout("slow", request=request)
+
+        mock_api.get(f"{ADMIN_BASE}/events").mock(side_effect=slow_then_fail)
+        result, truncated = KeyCloakClient().get_events_all("LOGIN", page_size=3, deadline=deadline)
+        assert result == [] and truncated is True
+
+    def test_token_refresh_is_bounded_by_the_remaining_budget(self, mock_api):
+        import time
+
+        token = mock_api.post(TOKEN_ENDPOINT).mock(
+            return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 300})
+        )
+        mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=[]))
+        kc = KeyCloakClient()
+        kc.auth._token = None  # force a refresh
+        kc._get("/events", deadline=time.monotonic() + 2.0)
+        assert token.calls.last.request.extensions["timeout"]["read"] <= 2.0
 
     def test_send_raises_deadline_exceeded_when_already_past(self, mock_api):
         with pytest.raises(client_mod.DeadlineExceeded):

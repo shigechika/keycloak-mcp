@@ -12,6 +12,7 @@ from .auth import TokenManager
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 _MAX_ATTEMPTS = 5
 _REQUEST_TIMEOUT = 30.0
+_TOKEN_TIMEOUT = 10.0
 _MIN_REQUEST_TIMEOUT = 0.05  # httpx needs a positive timeout; keeps the overrun negligible
 
 
@@ -79,9 +80,16 @@ class KeyCloakClient:
         for attempt in range(_MAX_ATTEMPTS):
             timeout = _REQUEST_TIMEOUT
             try:
-                # Token first: a refresh can itself use up the budget, so the remaining
-                # time is read only after it.
-                headers = self.auth.headers()
+                # Token first (a refresh can itself use up the budget, so the remaining time
+                # is read only after it), but check the budget before refreshing and bound
+                # the refresh request by it.
+                token_timeout = _TOKEN_TIMEOUT
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DeadlineExceeded(f"deadline passed before {method} {path}") from last_exc
+                    token_timeout = min(_TOKEN_TIMEOUT, max(remaining, _MIN_REQUEST_TIMEOUT))
+                headers = self.auth.headers(token_timeout)
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -109,6 +117,10 @@ class KeyCloakClient:
                     raise DeadlineExceeded(f"deadline reached while retrying {method} {path}") from last_exc
                 time.sleep(backoff)
         assert last_exc is not None
+        if deadline is not None and time.monotonic() >= deadline:
+            # The last attempt started in time but ended past the deadline: report it as
+            # the deadline (a disclosed partial for the paging callers), not a transport error.
+            raise DeadlineExceeded(f"deadline passed during the last attempt of {method} {path}") from last_exc
         raise last_exc
 
     def _get(self, path: str, params: dict | None = None, deadline: float | None = None) -> Any:

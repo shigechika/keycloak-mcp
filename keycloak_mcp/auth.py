@@ -30,13 +30,13 @@ class TokenManager:
         """Return the Admin REST API base URL."""
         return f"{self.url}/admin/realms/{self.realm}"
 
-    def get_token(self) -> str:
-        """Return a valid access token, refreshing if needed."""
+    def get_token(self, timeout: float = 10.0) -> str:
+        """Return a valid access token, refreshing if needed (``timeout`` bounds the refresh request)."""
         if self._token and time.time() < self._expires_at - 30:
             return self._token
-        return self._refresh()
+        return self._refresh(timeout)
 
-    def _refresh(self) -> str:
+    def _refresh(self, timeout: float = 10.0) -> str:
         """Fetch a new token via Client Credentials Grant."""
         resp = httpx.post(
             self.token_endpoint,
@@ -45,7 +45,7 @@ class TokenManager:
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
             },
-            timeout=10,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -53,6 +53,6 @@ class TokenManager:
         self._expires_at = time.time() + data.get("expires_in", 300)
         return self._token
 
-    def headers(self) -> dict:
+    def headers(self, timeout: float = 10.0) -> dict:
         """Return Authorization headers with a valid Bearer token."""
-        return {"Authorization": f"Bearer {self.get_token()}"}
+        return {"Authorization": f"Bearer {self.get_token(timeout)}"}
