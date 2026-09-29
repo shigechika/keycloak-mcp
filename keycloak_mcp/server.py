@@ -4,6 +4,8 @@ Uses Client Credentials Grant — no user password or TOTP required.
 Infinispan-safe: does not create user sessions or use userinfo endpoint.
 """
 
+import functools
+import inspect
 import ipaddress
 import math
 import os
@@ -15,6 +17,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 from . import __version__ as _version
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
@@ -170,7 +174,51 @@ def _with_warning(text: str, truncated: bool) -> str:
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
 
 
-mcp = MCPServer("keycloak-mcp", version=_version)
+def _expose_errors(fn):
+    """Wrap a tool so any exception reaches the model as a ToolError with its message.
+
+    mcp 1.x returned the exception text for every failing tool. mcp 2.x hides it
+    (the model sees only "Error executing tool <name>") unless a ToolError is raised.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ToolError, MCPError):
+                raise
+            except Exception as exc:
+                raise ToolError(str(exc) or type(exc).__name__) from exc
+
+    else:
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (ToolError, MCPError):
+                raise
+            except Exception as exc:
+                raise ToolError(str(exc) or type(exc).__name__) from exc
+
+    return wrapper
+
+
+class _Server(MCPServer):
+    """MCPServer whose tools report their exception messages (see _expose_errors)."""
+
+    def tool(self, *args, **kwargs):
+        register = super().tool(*args, **kwargs)
+
+        def decorator(fn):
+            register(_expose_errors(fn))
+            return fn
+
+        return decorator
+
+
+mcp = _Server("keycloak-mcp", version=_version)
 _client: KeyCloakClient | None = None
 _sites: SiteClassifier | None = None
 
