@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from mcp.server.mcpserver import MCPServer
 
+from . import __version__ as _version
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .sites import SiteClassifier
 
@@ -168,8 +169,6 @@ def _with_warning(text: str, truncated: bool) -> str:
     """Prepend the partial-result warning to a tool's text output when it was cut short."""
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
 
-
-from keycloak_mcp import __version__ as _version
 
 mcp = MCPServer("keycloak-mcp", version=_version)
 _client: KeyCloakClient | None = None
