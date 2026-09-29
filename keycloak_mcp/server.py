@@ -1255,7 +1255,8 @@ def get_ip_activity(
             scan. Narrow date_from when this is true.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has; the counts are then a lower bound. The returned dict then has ``events_capped: true`` (no warning text); narrow date_from / date_to.
+    returns what it has; the counts are then a lower bound. The returned dict then has
+    ``events_capped: true`` (no warning text); narrow date_from / date_to.
     Call again with a narrower window instead of retrying the same call. A wide window
     on a busy day is what triggers it.
 
@@ -1463,7 +1464,8 @@ def spray_check(
     never past the shared KEYCLOAK_DEADLINE.
 
     Time-bounded: this call stops after KEYCLOAK_DEADLINE seconds (default 45) and
-    returns what it has; the counts are then a lower bound. The returned dict then has ``complete: false`` (no warning text); use a smaller ``hours``.
+    returns what it has; the counts are then a lower bound. The returned dict then has
+    ``complete: false`` (no warning text); use a smaller ``hours``.
     Call again with a narrower window instead of retrying the same call. A wide window
     on a busy day is what triggers it.
 
