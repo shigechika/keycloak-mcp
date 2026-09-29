@@ -334,7 +334,6 @@ class TestGetEventsAll:
         assert route.call_count == 1  # 1st check (1000<1030) fetched one page; 2nd check (9999>1030) stopped
         assert len(result) == 3
 
-
     def test_slow_page_is_cut_off_by_deadline_not_retried_past_it(self, mock_api):
         # Every request times out: without a per-request bound the retries (5 attempts with
         # backoff) run far past the deadline. The deadline must end them and disclose a partial.
@@ -350,21 +349,32 @@ class TestGetEventsAll:
         assert route.call_count <= 3
         assert time.monotonic() - started < 4.0
 
-    def test_request_timeout_is_capped_by_remaining_deadline(self, mock_api, monkeypatch):
+    def test_request_timeout_is_capped_by_remaining_deadline(self, mock_api):
         import time
 
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=[]))
         kc = KeyCloakClient()
-        seen = {}
-
-        def fake_request(method, url, **kwargs):
-            seen["timeout"] = kwargs["timeout"]
-            return httpx.Response(200, json=[], request=httpx.Request(method, url))
-
-        monkeypatch.setattr(kc._http, "request", fake_request)
         kc._get("/events", deadline=time.monotonic() + 5.0)
-        assert 1.0 <= seen["timeout"] <= 5.0
+        capped = route.calls.last.request.extensions["timeout"]["read"]
+        assert 0 < capped <= 5.0
         kc._get("/events")  # no deadline: the normal 30 s
-        assert seen["timeout"] == 30.0
+        assert route.calls.last.request.extensions["timeout"]["read"] == 30.0
+
+    def test_timeout_has_no_one_second_floor(self, mock_api):
+        import time
+
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(return_value=httpx.Response(200, json=[]))
+        KeyCloakClient()._get("/events", deadline=time.monotonic() + 0.3)
+        assert route.calls.last.request.extensions["timeout"]["read"] <= 0.3
+
+    def test_user_credentials_lookup_is_bounded_by_the_deadline(self, mock_api):
+        import time
+
+        mock_api.get(f"{ADMIN_BASE}/users/u1/credentials").mock(side_effect=httpx.ReadTimeout("slow"))
+        started = time.monotonic()
+        with pytest.raises(client_mod.DeadlineExceeded):
+            KeyCloakClient().get_user_credentials("u1", deadline=time.monotonic() + 0.8)
+        assert time.monotonic() - started < 3.0
 
     def test_send_raises_deadline_exceeded_when_already_past(self, mock_api):
         with pytest.raises(client_mod.DeadlineExceeded):

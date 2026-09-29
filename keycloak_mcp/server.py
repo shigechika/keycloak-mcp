@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 
-from .client import KeyCloakClient, deadline_after, past_deadline
+from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .sites import SiteClassifier
 
 
@@ -889,7 +889,11 @@ def get_totp_users(
             break
         scanned += 1
         try:
-            creds = _kc().get_user_credentials(u["id"])
+            creds = _kc().get_user_credentials(u["id"], deadline=deadline)
+        except DeadlineExceeded:
+            scanned -= 1  # this user was not looked up
+            loop_trunc = True
+            break
         except Exception as exc:  # noqa: BLE001 — skip the user, keep scanning
             print(f"get_totp_users: {u.get('username', u['id'])}: {type(exc).__name__}: {exc}", file=sys.stderr)
             errors += 1
