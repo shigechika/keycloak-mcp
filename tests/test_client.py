@@ -319,7 +319,8 @@ class TestGetEventsAll:
     def test_deadline_stops_paging_between_pages(self, mock_api, monkeypatch):
         # Full pages would page forever; a deadline already in the past on the 2nd
         # loop iteration must stop paging and report a disclosed partial.
-        clock = iter([1000.0, 1000.0, 9999.0])  # deadline_after start, 1st check, 2nd check (past)
+        # deadline_after start, 1st check, the request's remaining-time read, 2nd check (past)
+        clock = iter([1000.0, 1000.0, 1000.0, 9999.0])
         monkeypatch.setattr("keycloak_mcp.client.time.monotonic", lambda: next(clock, 9999.0))
         # A single full page via side_effect (not return_value): if the deadline guard were
         # removed the loop would try to fetch a 2nd page and raise StopIteration — a fast, clean
@@ -332,6 +333,42 @@ class TestGetEventsAll:
         assert truncated is True
         assert route.call_count == 1  # 1st check (1000<1030) fetched one page; 2nd check (9999>1030) stopped
         assert len(result) == 3
+
+
+    def test_slow_page_is_cut_off_by_deadline_not_retried_past_it(self, mock_api):
+        # Every request times out: without a per-request bound the retries (5 attempts with
+        # backoff) run far past the deadline. The deadline must end them and disclose a partial.
+        import time
+
+        route = mock_api.get(f"{ADMIN_BASE}/events").mock(side_effect=httpx.ReadTimeout("slow"))
+        started = time.monotonic()
+        result, truncated = KeyCloakClient().get_events_all(
+            "LOGIN", page_size=3, deadline=client_mod.deadline_after(1.0)
+        )
+        assert truncated is True
+        assert result == []
+        assert route.call_count <= 3
+        assert time.monotonic() - started < 4.0
+
+    def test_request_timeout_is_capped_by_remaining_deadline(self, mock_api, monkeypatch):
+        import time
+
+        kc = KeyCloakClient()
+        seen = {}
+
+        def fake_request(method, url, **kwargs):
+            seen["timeout"] = kwargs["timeout"]
+            return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+        monkeypatch.setattr(kc._http, "request", fake_request)
+        kc._get("/events", deadline=time.monotonic() + 5.0)
+        assert 1.0 <= seen["timeout"] <= 5.0
+        kc._get("/events")  # no deadline: the normal 30 s
+        assert seen["timeout"] == 30.0
+
+    def test_send_raises_deadline_exceeded_when_already_past(self, mock_api):
+        with pytest.raises(client_mod.DeadlineExceeded):
+            KeyCloakClient()._get("/events", deadline=0.0)
 
 
 class TestGetAdminEvents:
