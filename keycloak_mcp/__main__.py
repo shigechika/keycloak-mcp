@@ -125,34 +125,26 @@ def main() -> None:
     if args.command == "spray-report":
         sys.exit(_spray_report(args))
 
-    # On Windows, the MCP SDK creates TextIOWrapper(sys.stdout.buffer) with the
-    # default newline=None, which translates \n → \r\n and corrupts the NDJSON
-    # wire format (modelcontextprotocol/python-sdk#2433).
-    # Intercept writes at the RawIOBase level to strip \r\n → \n, then rebuild
-    # sys.stdout so that the SDK's sys.stdout.buffer access gets our wrapper.
+    # On Windows the SDK's stdio transport wraps stdout with the default newline
+    # handling, which turns \n into \r\n and corrupts the NDJSON wire format
+    # (modelcontextprotocol/python-sdk#2433). Pass our own LF-only stream instead.
     if sys.platform == "win32":
         import io
 
-        class _CRStripper(io.RawIOBase):
-            """Strip \\r\\n → \\n inserted by TextIOWrapper on Windows."""
+        import anyio
+        from mcp.server.stdio import stdio_server
 
-            def __init__(self, fd: int) -> None:
-                self._fd = fd
+        async def _serve_stdio_lf() -> None:
+            out = anyio.wrap_file(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n"))
+            async with stdio_server(stdout=out) as (read_stream, write_stream):
+                low = mcp._lowlevel_server
+                await low.run(read_stream, write_stream, low.create_initialization_options())
 
-            def writable(self) -> bool:
-                return True
-
-            def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
-                data = bytes(b).replace(b"\r\n", b"\n")
-                os.write(self._fd, data)
-                return len(b)
-
-            def fileno(self) -> int:
-                return self._fd
-
-        sys.stdout.flush()
-        _buf = io.BufferedWriter(_CRStripper(sys.stdout.fileno()))
-        sys.stdout = io.TextIOWrapper(_buf, encoding="utf-8", errors="replace", newline="\n")
+        try:
+            anyio.run(_serve_stdio_lf)
+        except KeyboardInterrupt:
+            os._exit(0)
+        return
 
     try:
         mcp.run(transport="stdio")
