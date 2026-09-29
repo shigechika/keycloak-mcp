@@ -73,7 +73,7 @@ reviewer also receives.
   redundant with the unit tests. It is a real regression guard for CRLF
   handling on Windows.
 - Suggestions to hand-build an MCP content envelope
-  (`{"content": [...], "isError": ...}`) inside a tool handler. FastMCP
+  (`{"content": [...], "isError": ...}`) inside a tool handler. MCPServer
   wraps returned values already.
 - A finding that does nothing but restate one of the two gates CI
   already enforces: `ruff check .` and `ruff format --check .` both gate this

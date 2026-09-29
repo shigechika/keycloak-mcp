@@ -250,3 +250,23 @@ def test_no_site_specific_literals_in_specs():
         f"address-like literals in smoke_probes.py: {hits}. Discover such arguments "
         "at run time (args_factory) rather than hardcoding them."
     )
+
+
+def test_in_process_result_decodes_to_plain_data_on_the_installed_sdk(monkeypatch):
+    """The live smoke run decodes whatever this SDK's in-process call_tool returns.
+
+    mcp 1.x hands back content blocks; mcp 2.x hands back a CallToolResult (with
+    ``is_error`` / ``structured_content``). CI runs this on both majors, so a
+    future rename of those fields fails here rather than silently breaking the
+    daily smoke run.
+    """
+    import smoke_test  # noqa: E402 - needs the sys.path line above
+
+    # health_check must not reach a real backend from a developer machine.
+    for name in ["KEYCLOAK_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"]:
+        monkeypatch.delenv(name, raising=False)
+
+    raw = asyncio.run(mcp.call_tool("health_check", {}))
+    decoded = smoke_test._decode(raw)
+    assert isinstance(decoded, dict)
+    assert decoded["service"] == "keycloak-mcp"

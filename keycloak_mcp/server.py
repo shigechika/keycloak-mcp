@@ -14,8 +14,9 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
+from . import __version__ as _version
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .sites import SiteClassifier
 
@@ -169,7 +170,7 @@ def _with_warning(text: str, truncated: bool) -> str:
     return f"{_PARTIAL_WARNING}\n\n{text}" if truncated else text
 
 
-mcp = FastMCP("keycloak-mcp")
+mcp = MCPServer("keycloak-mcp", version=_version)
 _client: KeyCloakClient | None = None
 _sites: SiteClassifier | None = None
 
