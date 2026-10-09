@@ -171,7 +171,7 @@ deployment that shares the binary without an approval step never exposes them.
 - `apply_group_changes` re-plans and changes nothing unless every row is still executable
   and the digest equals the approved one, so a membership changed by anyone since the
   plan aborts the whole batch. It adds before it removes, vets the destination again
-  right before adding, reads memberships back after each write, and stops at the first
+  right before adding, re-reads memberships before each write and reads them back after it, and stops at the first
   mismatch, error or exhausted time budget (`KEYCLOAK_DEADLINE`). `applied` is `yes`,
   `no`, `partial` or `unknown` (a write that could not be read back).
 - Refused targets: anything outside the root, the root itself, protected groups and their

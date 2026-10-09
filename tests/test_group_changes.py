@@ -278,17 +278,17 @@ class TestApply:
         reads = {"n": 0}
 
         def hook(fake, user_id):
-            # alice: re-plan (1), before add (2), read-back of the add (3). The remove reuses
-            # read 3 instead of reading again.
+            # alice: re-plan (1), before add (2), after add (3), before remove (4).
             if user_id == "u-alice":
                 reads["n"] += 1
-                if reads["n"] == 3:
+                if reads["n"] == 4:
                     fake.members["u-alice"].discard(general)  # another admin undoes the add
 
         kc.before_read_hook = hook
         r = apply_changes(kc, cfg, [_swap()[0]], d)
-        assert r["applied"] == "no" and "does not show the change" in r["reason"]
+        assert r["applied"] == "partial" and "memberships changed" in r["reason"]
         assert [w[0] for w in kc.writes] == ["add"]  # the source group was NOT removed
+        assert r["reverse"] == [{"username": "alice", "remove": "/Staff/HQ/General", "add": None}]
 
     def test_lost_response_after_commit_is_detected(self, kc, cfg):
         d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
@@ -308,6 +308,24 @@ class TestApply:
     def test_no_write_starts_without_budget_left(self, kc, cfg):
         d = plan_changes(kc, cfg, _swap())["digest"]
         r = apply_changes(kc, cfg, _swap(), d, deadline=time.monotonic() + 1)
+        assert r["applied"] == "no" and "time budget" in r["reason"] and kc.writes == []
+
+    def test_reserve_is_checked_again_after_pre_write_reads(self, kc, cfg, monkeypatch):
+        from keycloak_mcp import group_changes
+
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(group_changes.time, "monotonic", lambda: clock["t"])
+        reads = {"n": 0}
+
+        def hook(fake, user_id):
+            # re-plan (1), before the add (2): the second read is slow and eats the reserve.
+            reads["n"] += 1
+            if reads["n"] == 2:
+                clock["t"] += 25
+
+        kc.before_read_hook = hook
+        r = apply_changes(kc, cfg, [_swap()[0]], d, deadline=1030.0)
         assert r["applied"] == "no" and "time budget" in r["reason"] and kc.writes == []
 
     def test_role_attached_to_destination_mid_run_stops(self, kc, cfg):

@@ -340,8 +340,8 @@ def apply_changes(
     Returns ``{"applied": "yes"|"no"|"partial"|"unknown", "reason", "plan", "operations",
     "reverse"}``. Nothing is written unless the fresh plan is ``ok`` and its digest equals
     ``expected_digest``. For each user the full expected membership set is carried from the
-    plan through every operation: the set read before the user's first write and the set
-    read back after each write must equal what is expected, otherwise the run stops
+    plan through every operation: the set read before each write and the set read back
+    after it must equal what is expected, otherwise the run stops
     (someone else changed the user in between). Each destination group is vetted again
     right before it is added. No write starts once less than ``WRITE_RESERVE_SECONDS`` of
     ``deadline`` remain; the run stops there with what was done so far. When a write raises,
@@ -387,7 +387,6 @@ def apply_changes(
 
     for row in plan["rows"]:
         expected = set(row.get("current_ids", []))
-        confirmed: set[str] | None = None  # last membership set read for this user
         for op in row.get("ops", []):
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
@@ -403,7 +402,10 @@ def apply_changes(
                     g, why = _Resolver(kc, cfg, deadline).vet(path)
                     if g is None or g["id"] != gid:
                         return _stop(record, f"stopped: destination no longer writable: {why or 'group id changed'}")
-                before = _ids(kc, row["user_id"], deadline) if confirmed is None else confirmed
+                # Read fresh before every write, even right after a read-back: someone may undo
+                # the add between it and the remove, and removing then would leave the user in
+                # neither group.
+                before = _ids(kc, row["user_id"], deadline)
             except (_Incomplete, DeadlineExceeded) as exc:
                 return _stop(record, f"stopped: time budget reached before this operation ({exc})")
             except Exception as exc:  # noqa: BLE001 - reported to the caller
@@ -411,6 +413,10 @@ def apply_changes(
             record["before"] = sorted(before)
             if before != expected:
                 return _stop(record, "stopped: memberships changed before this operation")
+            left = _remaining(deadline)
+            if left is not None and left < WRITE_RESERVE_SECONDS:
+                # The checks above can use up the reserve; never start the write without it.
+                return _stop(record, "stopped: time budget reached before this operation")
             try:
                 if op == "add":
                     record["status"] = kc.add_user_to_group(row["user_id"], gid, deadline=deadline)
@@ -430,7 +436,6 @@ def apply_changes(
             if after == target:
                 done.append((row, op))
                 expected = target
-                confirmed = after
                 if write_error:
                     return _stop(record, f"error reported but the change took effect: {write_error}")
                 record["result"] = "done"

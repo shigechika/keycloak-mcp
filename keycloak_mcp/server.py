@@ -1091,8 +1091,8 @@ def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
     tell the two apart. Re-plans first and changes nothing unless every row is still
     executable and the fresh digest equals ``expected_digest`` (any membership change since
     the plan, by anyone, aborts the whole batch). Then, per user, adds the new group before
-    removing the old one, vetting the destination again before adding and reading
-    memberships back after each write; the first mismatch, error or exhausted time budget
+    removing the old one, vetting the destination again before adding, re-reading
+    memberships before each write and reading them back after it; the first mismatch, error or exhausted time budget
     stops the run.
 
     Args:
