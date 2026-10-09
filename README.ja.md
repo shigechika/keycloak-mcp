@@ -125,6 +125,7 @@ pip install -e .
 | `KEYCLOAK_GROUP_WRITE_ROOT` | 任意で有効にするグループ変更ツール（`plan_group_changes`・`apply_group_changes`）を登録し、対象をこの絶対パス（例: `/Staff`）より下のグループに限る。未設定・空・不正な値のときは 2 つのツールを登録しない。承認の手順を前段に置く配備でだけ設定する | *未設定* |
 | `KEYCLOAK_PROTECTED_GROUPS` | グループ変更ツールが追加・削除を拒否するグループの完全パス（`;` 区切り、配下も含む）。不正な項目があると保護を黙って落とさず、グループ変更ツールごと無効にする | *未設定* |
 | `KEYCLOAK_GROUP_BATCH_MAX` | グループ変更 1 回あたりの最大行数 | `30` |
+| `KEYCLOAK_GROUP_DEADLINE` | グループ変更ツールの実時間バジェット（秒）。30 名のバッチは既定の 45 秒では足りない。前段に ~60 秒のタイムアウトが無い配備（サーバを直接起動するクライアントなど）で長くする。未設定なら `KEYCLOAK_DEADLINE` | *未設定* |
 
 ### KeyCloak 側のクライアント設定
 
@@ -155,14 +156,14 @@ realm を変更する権限を一切与えずに調査だけ任せられる，�
 
 | ツール | Admin API |
 |---|---|
-| `plan_group_changes` | 読み取りのみ: `GET /group-by-path/...`、`GET /groups/{id}/role-mappings`、`GET /users/{id}/groups` |
+| `plan_group_changes` | 読み取りのみ: `GET /users?username=...&exact=true`、`GET /group-by-path/...`、`GET /groups/{id}/role-mappings`、`GET /users/{id}/groups` |
 | `apply_group_changes` | `PUT /users/{id}/groups/{groupId}` のあと `DELETE /users/{id}/groups/{groupId}` |
 
 - `plan_group_changes` はユーザーとグループを名前・パスの完全一致で解決し、行ごとに現在の直接所属、実行される操作、判定を返す。`digest` は解決した ID、各ユーザーの現在の所属、ポリシーを含む。
-- `apply_group_changes` は計画をやり直し、全行がまだ実行可能で digest が承認時と一致するときだけ変更する。計画のあとに誰かが所属を変えていれば一括で中止する。追加してから削除し、追加の直前に追加先をもう一度審査し、書き込みの前に所属を読み直し、書き込みの後に読み戻し、最初の不一致、エラー、時間切れ（`KEYCLOAK_DEADLINE`）で止まる。`applied` は `yes`、`no`、`partial`、`unknown`（読み戻せなかった書き込みがある）のいずれか。
+- `apply_group_changes` は計画をやり直し、全行がまだ実行可能で digest が承認時と一致するときだけ変更する。計画のあとに誰かが所属を変えていれば一括で中止する。追加してから削除し、追加の直前に追加先をもう一度審査し、書き込みの前に所属を読み直し、書き込みの後に読み戻し、最初の不一致、エラー、時間切れ（`KEYCLOAK_GROUP_DEADLINE`）で止まる。残り時間で全操作を終えられないユーザーには手を付けないので、止まっても追加と削除の間で分かれることはない。`applied` は `yes`、`no`、`partial`、`unknown`（読み戻せなかった書き込みがある）のいずれか。
 - 拒否する対象: root の外、root 自身、保護グループとその配下、realm・client のロールマッピングを直接または祖先経由で持つグループ。
-- ロールマッピングが無いことは、権限が無いことを意味しない。所属そのものがアクセスの条件になっているグループ（サービスプロバイダが確かめる SAML・OIDC のグループマッパー、認可サービスのグループポリシー）は、すべて `KEYCLOAK_PROTECTED_GROUPS` に載せる。ロールの確認ではこれらを見分けられない。
-- `digest` は計画のあと何も変わっていないことを示すだけで、人が承認したことの証明ではない。`plan_group_changes` を呼べれば誰でも有効な digest を得られる。承認は `apply_group_changes` の手前に置く（たとえば digest をクライアント側で保持し、呼び出しのたびに人に確かめる）。
+- ロールマッピングが無いことは、権限が無いことを意味しない。所属そのものがアクセスの条件になっているグループ（サービスプロバイダが確かめる SAML・OIDC のグループマッパー、認可サービスのグループポリシー）は、すべて `KEYCLOAK_PROTECTED_GROUPS` に載せる。ロールの確認ではこれらを見分けられない。保護グループのパスは KeyCloak に実在しなければならず、1 つでも見つからない（改名・移動・大文字小文字の違い）ときは、設定を直すまですべての計画を拒否する。
+- `digest` は計画のあと何も変わっていないことを示すだけで、人が承認したことの証明ではない。`plan_group_changes` を呼べれば誰でも有効な digest を得られる。承認は `apply_group_changes` の手前に置く（たとえば digest をクライアント側で保持し、呼び出しのたびに人に確かめる）。承認は 1 回限りとして扱う。`reverse` などで所属が計画時の状態に戻ると、古い digest がまた一致する。
 - 結果の `reverse` は、実際に起きた変更を戻すための変更案。新しい計画と承認のための提案で、自動では実行しない。所属を戻しても、誤った所属の間に起きたアクセスは取り消せない。
 
 書き込みには `manage-users` が要る。KeyCloak のバージョンによっては、グループとそのロールマッピングの参照に `query-groups` も要る。`plan_group_changes` を一度実行して確かめる。

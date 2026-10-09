@@ -1052,6 +1052,24 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
     return "\n".join(lines)
 
 
+def _group_deadline_seconds() -> float | None:
+    """Budget for the group-change tools: KEYCLOAK_GROUP_DEADLINE, else KEYCLOAK_DEADLINE.
+
+    A client that calls the server directly (no ~60s gateway in front) can give a batch more
+    time than the heavy read tools get. 0 or negative disables.
+    """
+    raw = os.environ.get("KEYCLOAK_GROUP_DEADLINE", "").strip()
+    if not raw:
+        return _deadline_seconds()
+    try:
+        secs = float(raw)
+    except ValueError:
+        return _deadline_seconds()
+    if not math.isfinite(secs):
+        return _deadline_seconds()
+    return secs if secs > 0 else None
+
+
 def _group_write_config():
     """The group-write policy, re-read from the environment on every call (fail closed)."""
     cfg = load_config()
@@ -1076,11 +1094,12 @@ def plan_group_changes(changes: list[dict]) -> dict:
     null when not ok), ``rows`` (per user: current groups, operations that would run in
     order, and ``status``: ``ok``, ``no-op`` when the move has already happened, or the
     reason it cannot run, including a ``remove`` group the user is not in) and ``errors``
-    (for example the time budget ran out; split the batch). Groups outside the server's
+    (for example the time budget ran out, split the batch; or a protected group configured on
+    the server does not exist, which blocks every plan until fixed). Groups outside the server's
     writable root, protected groups, and groups that carry realm/client roles (directly or
     via an ancestor) are refused.
     """
-    return plan_changes(_kc(), _group_write_config(), changes, deadline=deadline_after(_deadline_seconds()))
+    return plan_changes(_kc(), _group_write_config(), changes, deadline=deadline_after(_group_deadline_seconds()))
 
 
 def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
@@ -1088,7 +1107,9 @@ def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
 
     Writes. Call it only after a person has seen the plan and approved it: the digest is a
     check that nothing changed since the plan, not proof of approval, and this server cannot
-    tell the two apart. Re-plans first and changes nothing unless every row is still
+    tell the two apart. Treat an approval as single-use: if the memberships return to the
+    planned state (for example after ``reverse``), the old digest matches again.
+    Re-plans first and changes nothing unless every row is still
     executable and the fresh digest equals ``expected_digest`` (any membership change since
     the plan, by anyone, aborts the whole batch). Then, per user, adds the new group before
     removing the old one, vetting the destination again before adding, re-reading
@@ -1108,7 +1129,7 @@ def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
     restoring memberships does not undo access that happened while they were wrong.
     """
     return apply_changes(
-        _kc(), _group_write_config(), changes, expected_digest, deadline=deadline_after(_deadline_seconds())
+        _kc(), _group_write_config(), changes, expected_digest, deadline=deadline_after(_group_deadline_seconds())
     )
 
 

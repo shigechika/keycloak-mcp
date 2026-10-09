@@ -158,10 +158,21 @@ class TestPlan:
         p = plan_changes(kc, cfg, [_swap()[0]])
         assert p["ok"] is False and "returned 'bob'" in p["rows"][0]["status"]
 
-    def test_incomplete_membership_read_is_not_ok(self, kc, cfg):
+    def test_membership_cap_is_not_reported_as_time(self, kc, cfg):
         kc.truncate_reads = True
         p = plan_changes(kc, cfg, _swap())
-        assert p["ok"] is False and p["digest"] is None and "time budget" in p["errors"][0]
+        assert p["ok"] is False and p["digest"] is None
+        assert "more direct groups" in p["errors"][0] and "time budget" not in p["errors"][0]
+
+    def test_missing_protected_group_blocks_every_plan(self, kc):
+        cfg = GroupWriteConfig(realm="test", root=ROOT, protected=("/Staff/HQ/it/Admins",), batch_max=5)
+        p = plan_changes(kc, cfg, _swap())
+        assert p["ok"] is False and "protected group(s) not found" in p["errors"][0]
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_side_is_null(self, kc, cfg, blank):
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": blank, "add": "/Staff/HQ/General"}])
+        assert p["ok"] is True and p["rows"][0]["remove"] is None
 
     @pytest.mark.parametrize("path", ["/Staff/../StaffOther/X", "/Staff/./HQ", "/Staff/HQ/.."])
     def test_dot_segments_are_invalid(self, kc, cfg, path):
@@ -290,12 +301,21 @@ class TestApply:
         assert [w[0] for w in kc.writes] == ["add"]  # the source group was NOT removed
         assert r["reverse"] == [{"username": "alice", "remove": "/Staff/HQ/General", "add": None}]
 
-    def test_lost_response_after_commit_is_detected(self, kc, cfg):
+    def test_lost_response_after_commit_counts_as_done(self, kc, cfg):
         d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
         kc.commit_then_raise = ("add", "u-alice")
         r = apply_changes(kc, cfg, [_swap()[0]], d)
-        assert r["applied"] == "partial" and "took effect" in r["reason"]
-        assert r["reverse"][0]["remove"] == "/Staff/HQ/General"
+        assert r["applied"] == "yes" and "took effect" in r["operations"][0]["result"]
+        assert [w[0] for w in kc.writes] == ["add", "remove"]
+
+    def test_user_is_not_started_without_time_for_all_ops(self, kc, cfg, monkeypatch):
+        from keycloak_mcp import group_changes
+
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        monkeypatch.setattr(group_changes.time, "monotonic", lambda: 1000.0)
+        # 15 s left: enough for one write (10 s reserve) but not for alice's two.
+        r = apply_changes(kc, cfg, [_swap()[0]], d, deadline=1015.0)
+        assert r["applied"] == "no" and "before this user" in r["reason"] and kc.writes == []
 
     def test_unconfirmable_write_is_unknown(self, kc, cfg):
         d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
@@ -309,6 +329,24 @@ class TestApply:
         d = plan_changes(kc, cfg, _swap())["digest"]
         r = apply_changes(kc, cfg, _swap(), d, deadline=time.monotonic() + 1)
         assert r["applied"] == "no" and "time budget" in r["reason"] and kc.writes == []
+
+    def test_destination_vetted_once_within_ttl(self, kc, cfg):
+        calls = {"n": 0}
+        orig = kc.get_group_role_mappings
+
+        def counting(gid, deadline=None):
+            calls["n"] += 1
+            return orig(gid)
+
+        kc.users["carol"] = {"id": "u-carol", "username": "carol"}
+        kc.members["u-carol"] = set()
+        changes = [{"username": u, "remove": None, "add": "/Staff/Med/Office"} for u in ("alice", "carol")]
+        d = plan_changes(kc, cfg, changes)["digest"]
+        kc.get_group_role_mappings = counting
+        r = apply_changes(kc, cfg, changes, d)
+        assert r["applied"] == "yes"
+        # re-plan vets once (cached), then one fresh re-vet for the first add only: 2 x 3 ancestors
+        assert calls["n"] == 6
 
     def test_reserve_is_checked_again_after_pre_write_reads(self, kc, cfg, monkeypatch):
         from keycloak_mcp import group_changes

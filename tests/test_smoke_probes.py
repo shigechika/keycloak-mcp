@@ -276,9 +276,11 @@ def test_in_process_result_decodes_to_plain_data_on_the_installed_sdk(monkeypatc
 def test_group_tools_are_covered_when_enabled(monkeypatch):
     """CI runs without KEYCLOAK_GROUP_WRITE_ROOT, so check the opt-in registration here."""
     import importlib
+    import os
 
     from keycloak_mcp import server
 
+    original = os.environ.get("KEYCLOAK_GROUP_WRITE_ROOT")
     monkeypatch.setenv("KEYCLOAK_GROUP_WRITE_ROOT", "/Staff")
     s = server._Server("t")
     assert server.register_group_tools(s) is True
@@ -290,5 +292,10 @@ def test_group_tools_are_covered_when_enabled(monkeypatch):
         for name in names & STATE_CHANGING:
             assert probes.PROBES[name].skip, f"{name} changes state and must be skipped"
     finally:
-        monkeypatch.delenv("KEYCLOAK_GROUP_WRITE_ROOT")
+        # Restore the caller's value before reloading, so the module matches the server
+        # that the rest of this file inspects.
+        if original is None:
+            monkeypatch.delenv("KEYCLOAK_GROUP_WRITE_ROOT")
+        else:
+            monkeypatch.setenv("KEYCLOAK_GROUP_WRITE_ROOT", original)
         importlib.reload(smoke_probes)

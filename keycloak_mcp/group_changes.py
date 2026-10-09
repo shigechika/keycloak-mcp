@@ -47,13 +47,19 @@ BATCH_MAX_DEFAULT = 30
 WRITE_RESERVE_SECONDS = 10.0
 # Extra time a read-back may take past the budget once a write has been sent.
 READBACK_GRACE_SECONDS = 10.0
+# A destination vetted this recently in the same apply call is not vetted again.
+REVET_TTL_SECONDS = 5.0
 
 OK = "ok"
 NO_OP = "no-op"
 
 
 class _Incomplete(Exception):
-    """A membership list could not be read completely (deadline or size cap)."""
+    """A membership list could not be read completely."""
+
+
+class _OutOfTime(_Incomplete):
+    """The time budget ran out."""
 
 
 @dataclass(frozen=True)
@@ -181,10 +187,13 @@ class _Resolver:
 
 
 def _groups(kc, user_id: str, deadline: float | None) -> list[dict]:
-    """A user's complete direct group list, or :class:`_Incomplete`."""
+    """A user's complete direct group list, or :class:`_Incomplete` / :class:`_OutOfTime`."""
     groups, truncated = kc.get_user_groups_all(user_id, deadline=deadline)
     if truncated:
-        raise _Incomplete(f"could not read all groups of user {user_id} in time")
+        left = _remaining(deadline)
+        if left is not None and left <= 0:
+            raise _OutOfTime(f"time budget reached while reading the groups of user {user_id}")
+        raise _Incomplete(f"user {user_id} has more direct groups than can be read ({len(groups)}+)")
     return groups
 
 
@@ -201,7 +210,7 @@ def _norm_change(raw: Any) -> tuple[dict[str, Any] | None, str]:
     out: dict[str, Any] = {"username": username.strip()}
     for key in ("remove", "add"):
         val = raw.get(key)
-        if val in (None, ""):
+        if val is None or (isinstance(val, str) and not val.strip()):
             out[key] = None
         elif isinstance(val, str):
             out[key] = val.strip()
@@ -278,6 +287,16 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
     rows: list[dict] = []
     seen: set[str] = set()
     try:
+        # A protected path that does not resolve (renamed, moved, case differs) would
+        # silently protect nothing, so every entry must exist before anything is planned.
+        missing = [p for p in cfg.protected if resolver.group(p) is None]
+        if missing:
+            return {
+                "ok": False,
+                "digest": None,
+                "rows": [],
+                "errors": [f"protected group(s) not found in KeyCloak: {', '.join(missing)}; fix the configuration"],
+            }
         for raw in changes:
             norm, problem = _norm_change(raw)
             if norm is None:
@@ -316,13 +335,15 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
                 continue
             _decide(row)
             rows.append(row)
-    except (_Incomplete, DeadlineExceeded) as exc:
+    except (_OutOfTime, DeadlineExceeded) as exc:
         return {
             "ok": False,
             "digest": None,
             "rows": rows,
             "errors": [f"time budget reached while planning ({exc}); split the batch and retry"],
         }
+    except _Incomplete as exc:
+        return {"ok": False, "digest": None, "rows": rows, "errors": [f"cannot plan: {exc}"]}
 
     ok = all(r["status"] in (OK, NO_OP) for r in rows)
     return {"ok": ok, "digest": _digest(cfg, rows) if ok else None, "rows": rows, "errors": []}
@@ -343,8 +364,10 @@ def apply_changes(
     plan through every operation: the set read before each write and the set read back
     after it must equal what is expected, otherwise the run stops
     (someone else changed the user in between). Each destination group is vetted again
-    right before it is added. No write starts once less than ``WRITE_RESERVE_SECONDS`` of
-    ``deadline`` remain; the run stops there with what was done so far. When a write raises,
+    right before it is added. A user is not started unless ``WRITE_RESERVE_SECONDS`` per
+    operation of ``deadline`` remain, and no write starts with less than one reserve left;
+    the run stops there with what was done so far. A write that raised but is confirmed by
+    the read-back counts as done. When a write raises,
     memberships are read again to learn whether it took effect; if that read also fails the
     outcome is ``unknown``. ``reverse`` lists, as changes for a new plan, the operations
     that took effect or may have.
@@ -362,6 +385,7 @@ def apply_changes(
         }
 
     readback_deadline = None if deadline is None else deadline + READBACK_GRACE_SECONDS
+    vetted_at: dict[str, float] = {}  # destination path -> when it was last vetted in this call
     operations: list[dict] = []
     done: list[tuple[dict, str]] = []  # (row, op) that took effect or may have, in order
     uncertain = False
@@ -387,7 +411,14 @@ def apply_changes(
 
     for row in plan["rows"]:
         expected = set(row.get("current_ids", []))
-        for op in row.get("ops", []):
+        ops = row.get("ops", [])
+        left = _remaining(deadline)
+        if ops and left is not None and left < WRITE_RESERVE_SECONDS * len(ops):
+            # Do not start a user whose operations cannot all finish: stopping between the add
+            # and the remove leaves them in both groups.
+            record = {"username": row["username"], "op": ops[0], "group": row.get(ops[0])}
+            return _stop(record, "stopped: time budget reached before this user")
+        for op in ops:
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
             target = (expected | {gid}) if op == "add" else (expected - {gid})
@@ -396,12 +427,13 @@ def apply_changes(
             if left is not None and left < WRITE_RESERVE_SECONDS:
                 return _stop(record, "stopped: time budget reached before this operation")
             try:
-                if op == "add":
+                if op == "add" and time.monotonic() - vetted_at.get(path, float("-inf")) > REVET_TTL_SECONDS:
                     # A role or a new path may have been attached to the destination since the
-                    # plan; vet it again with no cache.
+                    # plan; vet it again with no cache (at most once per REVET_TTL_SECONDS).
                     g, why = _Resolver(kc, cfg, deadline).vet(path)
                     if g is None or g["id"] != gid:
                         return _stop(record, f"stopped: destination no longer writable: {why or 'group id changed'}")
+                    vetted_at[path] = time.monotonic()
                 # Read fresh before every write, even right after a read-back: someone may undo
                 # the add between it and the remove, and removing then would leave the user in
                 # neither group.
@@ -436,9 +468,10 @@ def apply_changes(
             if after == target:
                 done.append((row, op))
                 expected = target
-                if write_error:
-                    return _stop(record, f"error reported but the change took effect: {write_error}")
+                # The read-back is the authority: a write that raised but took effect is done.
                 record["result"] = "done"
+                if write_error:
+                    record["result"] = f"done (error reported but the change took effect: {write_error})"
                 operations.append(record)
                 continue
             if after == before:
