@@ -7,6 +7,7 @@ Infinispan-safe: does not create user sessions or use userinfo endpoint.
 import functools
 import inspect
 import ipaddress
+import logging
 import math
 import os
 import secrets
@@ -1144,6 +1145,12 @@ def register_group_tools(server) -> bool:
     binary without an approval step in front of it never expose a membership write.
     """
     if load_config() is None:
+        if os.environ.get("KEYCLOAK_GROUP_WRITE_ROOT", "").strip():
+            # Root is set but another KEYCLOAK_GROUP_* value is invalid: say why the tools are missing.
+            logging.getLogger(__name__).warning(
+                "group-change tools not registered: invalid KEYCLOAK_GROUP_WRITE_ROOT, "
+                "KEYCLOAK_PROTECTED_GROUPS, KEYCLOAK_GROUP_BATCH_MAX or KEYCLOAK_GROUP_MODE"
+            )
         return False
     server.tool()(plan_group_changes)
     server.tool()(apply_group_changes)

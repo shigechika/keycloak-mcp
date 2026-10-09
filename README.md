@@ -182,11 +182,13 @@ deployment that shares the binary without an approval step never exposes them.
   itself, so no DELETE is sent and the read-back must show the destination alone. A row
   must name the group to add (a remove-only row would leave the user in no group). An
   omitted `remove` is filled in with the user's current group so the approver sees what
-  is left, and every group that will be left is vetted like a `remove`. A user who is
-  already in the destination plus other groups is refused (fix them by hand: the server
-  does nothing on a repeated add, so the extra groups would stay). Set it when your
-  KeyCloak behaves this way; in `multi` mode such a server makes every move stop as a
-  concurrent change.
+  is left, and that group is vetted like a `remove` at plan time and again right before
+  the add. A user in more than one group breaks the server's rule and is refused (fix them
+  by hand). Users whose previous state a plan cannot restore (they had no group, or the
+  server turned out not to replace) are listed in `manual_restore` instead of `reverse`.
+  Set it when your KeyCloak behaves this way; in `multi` mode such a server makes every
+  move stop as a concurrent change, and in `single` mode a server that keeps the old group
+  makes the move stop with a message that the mode does not match.
 - Refused targets: anything outside the root, the root itself, protected groups and their
   descendants, and any group that carries realm or client role mappings directly or
   through an ancestor.
