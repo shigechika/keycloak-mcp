@@ -138,7 +138,8 @@ pip install -e .
 
 ### Write operations
 
-Four tools change state. Everything else only reads.
+Four tools change state by default. Everything else only reads. With group changes
+enabled (below), `apply_group_changes` is a fifth.
 
 | Tool | Admin API call |
 |---|---|
@@ -169,11 +170,21 @@ deployment that shares the binary without an approval step never exposes them.
   `digest` covers the resolved IDs, each user's current groups and the policy.
 - `apply_group_changes` re-plans and changes nothing unless every row is still executable
   and the digest equals the approved one, so a membership changed by anyone since the
-  plan aborts the whole batch. It adds before it removes, re-reads memberships before each
-  write, reads back after it, and stops at the first mismatch or error.
+  plan aborts the whole batch. It adds before it removes, vets the destination again
+  right before adding, reads memberships back after each write, and stops at the first
+  mismatch, error or exhausted time budget (`KEYCLOAK_DEADLINE`). `applied` is `yes`,
+  `no`, `partial` or `unknown` (a write that could not be read back).
 - Refused targets: anything outside the root, the root itself, protected groups and their
   descendants, and any group that carries realm or client role mappings directly or
   through an ancestor.
+- No role mappings does not mean no privilege. A group can grant access through
+  membership alone (a SAML/OIDC group mapper that a service provider checks, or an
+  authorization-services group policy). List every such group in
+  `KEYCLOAK_PROTECTED_GROUPS`; the role check cannot see them.
+- The `digest` shows that nothing changed since the plan. It does not prove that a person
+  approved the plan: any caller of `plan_group_changes` gets a valid digest. Put the
+  approval in front of `apply_group_changes`, for example a client that keeps the digest
+  itself and asks a person before each call.
 - The result includes `reverse`, the changes that would undo what took effect. It is a
   proposal for a new plan and approval, never applied automatically. Restoring a
   membership does not undo access that happened while it was wrong.

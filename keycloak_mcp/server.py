@@ -1063,8 +1063,8 @@ def _group_write_config():
 def plan_group_changes(changes: list[dict]) -> dict:
     """Check a batch of group moves without changing anything (e.g. staff transfers).
 
-    Read-only. Use this first, show the result to a human, and pass its ``digest`` to
-    apply_group_changes only after they approve it.
+    Read-only. Use this first and show the result to a human. Only after they approve it,
+    call apply_group_changes with the same changes and this result's ``digest``.
 
     Args:
         changes: List of objects ``{"username": "<exact username>", "remove": "<full group
@@ -1074,33 +1074,42 @@ def plan_group_changes(changes: list[dict]) -> dict:
     Returns a dict with ``ok`` (True only when every row is ``ok`` or ``no-op``), ``digest``
     (covers the resolved IDs, each user's current direct groups and the server's policy;
     null when not ok), ``rows`` (per user: current groups, operations that would run in
-    order, and ``status``: ``ok``, ``no-op`` or the reason it cannot run) and ``errors``.
-    Groups outside the server's writable root, protected groups, and groups that carry
-    realm/client roles (directly or via an ancestor) are refused.
+    order, and ``status``: ``ok``, ``no-op`` when the move has already happened, or the
+    reason it cannot run, including a ``remove`` group the user is not in) and ``errors``
+    (for example the time budget ran out; split the batch). Groups outside the server's
+    writable root, protected groups, and groups that carry realm/client roles (directly or
+    via an ancestor) are refused.
     """
-    return plan_changes(_kc(), _group_write_config(), changes)
+    return plan_changes(_kc(), _group_write_config(), changes, deadline=deadline_after(_deadline_seconds()))
 
 
 def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
     """Apply a batch of group moves that a human approved from plan_group_changes.
 
-    Writes. Re-plans first and changes nothing unless every row is still executable and
-    the fresh digest equals ``expected_digest`` (any membership change since the plan, by
-    anyone, aborts the whole batch). Then, per user, adds the new group before removing
-    the old one, re-reading memberships before each write and reading back after it; the
-    first mismatch or error stops the run.
+    Writes. Call it only after a person has seen the plan and approved it: the digest is a
+    check that nothing changed since the plan, not proof of approval, and this server cannot
+    tell the two apart. Re-plans first and changes nothing unless every row is still
+    executable and the fresh digest equals ``expected_digest`` (any membership change since
+    the plan, by anyone, aborts the whole batch). Then, per user, adds the new group before
+    removing the old one, vetting the destination again before adding and reading
+    memberships back after each write; the first mismatch, error or exhausted time budget
+    stops the run.
 
     Args:
         changes: The same list that was passed to plan_group_changes.
         expected_digest: The ``digest`` from the approved plan_group_changes result.
 
-    Returns ``applied`` (``yes``, ``no`` or ``partial``), ``reason``, the fresh ``plan``,
-    per-operation ``operations`` (before/after memberships and HTTP status) and
-    ``reverse``: changes that would undo what took effect. ``reverse`` is a proposal for a
-    new plan/approval, never applied automatically; restoring memberships does not undo
-    access that happened while they were wrong.
+    Returns ``applied``: ``yes`` (everything done), ``no`` (nothing written), ``partial``
+    (some operations done, then stopped) or ``unknown`` (a write may or may not have taken
+    effect because it could not be read back; check the user before retrying). Also
+    ``reason``, the fresh ``plan``, per-operation ``operations`` (before/after memberships
+    and HTTP status) and ``reverse``: changes that would undo what took effect or may have.
+    ``reverse`` is a proposal for a new plan/approval, never applied automatically;
+    restoring memberships does not undo access that happened while they were wrong.
     """
-    return apply_changes(_kc(), _group_write_config(), changes, expected_digest)
+    return apply_changes(
+        _kc(), _group_write_config(), changes, expected_digest, deadline=deadline_after(_deadline_seconds())
+    )
 
 
 def register_group_tools(server) -> bool:

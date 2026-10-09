@@ -128,17 +128,17 @@ class KeyCloakClient:
         """GET request to Admin API (optionally bounded by an absolute monotonic ``deadline``)."""
         return self._send("GET", path, params=params, deadline=deadline).json()
 
-    def _put(self, path: str, json: dict | None = None) -> int:
+    def _put(self, path: str, json: dict | None = None, deadline: float | None = None) -> int:
         """PUT request to Admin API. Returns status code."""
-        return self._send("PUT", path, json=json or {}).status_code
+        return self._send("PUT", path, json=json or {}, deadline=deadline).status_code
 
     def _post(self, path: str, json: dict | None = None) -> int:
         """POST request to Admin API. Returns status code."""
         return self._send("POST", path, json=json).status_code
 
-    def _delete(self, path: str) -> int:
+    def _delete(self, path: str, deadline: float | None = None) -> int:
         """DELETE request to Admin API. Returns status code."""
-        return self._send("DELETE", path).status_code
+        return self._send("DELETE", path, deadline=deadline).status_code
 
     def _paginate(
         self,
@@ -233,13 +233,15 @@ class KeyCloakClient:
         """
         return self._get(f"/users/{user_id}/credentials", deadline=deadline)
 
-    def get_user_by_username(self, username: str) -> dict | None:
+    def get_user_by_username(self, username: str, deadline: float | None = None) -> dict | None:
         """Get user by exact username. Returns None if not found.
 
         Uses the search endpoint, which KeyCloak returns in brief representation
         (no ``attributes``). Use :meth:`get_user_by_id` for the full representation.
+        Callers that act on the result should still compare the returned ``username``:
+        user-storage providers may not honour ``exact``.
         """
-        users = self._get("/users", {"username": username, "exact": "true"})
+        users = self._get("/users", {"username": username, "exact": "true"}, deadline=deadline)
         return users[0] if users else None
 
     def get_user_by_id(self, user_id: str, deadline: float | None = None) -> dict:
@@ -293,24 +295,39 @@ class KeyCloakClient:
         """Get groups a user belongs to."""
         return self._get(f"/users/{user_id}/groups")
 
-    def get_user_groups_all(self, user_id: str, page_size: int = 100) -> list[dict]:
+    def get_user_groups_all(
+        self,
+        user_id: str,
+        page_size: int = 100,
+        deadline: float | None = None,
+        max_total: int | None = 1000,
+    ) -> tuple[list[dict], bool]:
         """Get every group a user directly belongs to, paging until a short page.
 
         Group-change tools compare full membership sets, so a single page that
         silently stops at the server default would hide memberships.
-        """
-        return self._paginate(f"/users/{user_id}/groups", {"briefRepresentation": "true"}, page_size)[0]
 
-    def add_user_to_group(self, user_id: str, group_id: str) -> int:
+        :returns: ``(groups, truncated)``. ``truncated`` is True when paging stopped on
+            ``deadline`` or ``max_total``; such a list must not be treated as complete.
+        """
+        return self._paginate(
+            f"/users/{user_id}/groups",
+            {"briefRepresentation": "true"},
+            page_size,
+            max_total=max_total,
+            deadline=deadline,
+        )
+
+    def add_user_to_group(self, user_id: str, group_id: str, deadline: float | None = None) -> int:
         """Add a user to a group (``PUT /users/{id}/groups/{groupId}``). Returns the status code.
 
         Both IDs must already be resolved from the Admin API; callers never pass raw input here.
         """
-        return self._put(f"/users/{user_id}/groups/{group_id}")
+        return self._put(f"/users/{user_id}/groups/{group_id}", deadline=deadline)
 
-    def remove_user_from_group(self, user_id: str, group_id: str) -> int:
+    def remove_user_from_group(self, user_id: str, group_id: str, deadline: float | None = None) -> int:
         """Remove a user from a group (``DELETE /users/{id}/groups/{groupId}``). Returns the status code."""
-        return self._delete(f"/users/{user_id}/groups/{group_id}")
+        return self._delete(f"/users/{user_id}/groups/{group_id}", deadline=deadline)
 
     # --- Brute Force ---
 
@@ -324,26 +341,31 @@ class KeyCloakClient:
         """List all groups."""
         return self._get("/groups", {"max": max_results})
 
-    def get_group_by_path(self, path: str) -> dict | None:
+    def get_group_by_path(self, path: str, deadline: float | None = None) -> dict | None:
         """Get a group by its path (e.g. ``"/教職員"``), or ``None`` when no such group exists.
 
         A leading slash is accepted and stripped before building the URL, so
         both ``"/教職員"`` and ``"教職員"`` resolve the same group. Each segment is
-        percent-encoded (``/`` kept as the separator) so input such as ``?``,
-        ``#`` or ``%`` cannot change the request. Only a 404 maps to ``None``;
-        401/403 and server errors propagate. Returns the group dict (``id``,
-        ``name``, ``path``, possibly ``subGroups``).
+        percent-encoded on its own (``safe=""``) and ``.``/``..`` segments are
+        refused, so input such as ``?``, ``#``, ``%`` or dot segments cannot steer
+        the request to another endpoint. Only a 404 maps to ``None``; 401/403 and
+        server errors propagate. Returns the group dict (``id``, ``name``,
+        ``path``, possibly ``subGroups``).
         """
+        segments = path.lstrip("/").split("/")
+        if any(seg in (".", "..") for seg in segments):
+            raise ValueError(f"group path must not contain '.' or '..' segments: {path!r}")
+        encoded = "/".join(quote(seg, safe="") for seg in segments)
         try:
-            return self._get(f"/group-by-path/{quote(path.lstrip('/'), safe='/')}")
+            return self._get(f"/group-by-path/{encoded}", deadline=deadline)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
             raise
 
-    def get_group_role_mappings(self, group_id: str) -> dict:
+    def get_group_role_mappings(self, group_id: str, deadline: float | None = None) -> dict:
         """Role mappings assigned directly to a group (``realmMappings`` / ``clientMappings``)."""
-        return self._get(f"/groups/{group_id}/role-mappings")
+        return self._get(f"/groups/{group_id}/role-mappings", deadline=deadline)
 
     def get_group_children(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
         """Get the direct child (sub-)groups of a group (single page)."""

@@ -1,5 +1,7 @@
 """Tests for planned group-membership changes (plan_changes / apply_changes)."""
 
+import time
+
 import httpx
 import pytest
 
@@ -47,27 +49,31 @@ class FakeKC:
         self.commit_then_raise = None  # (op, user_id) -> commit, then raise (lost response)
         self.fail_reads_after_write = False
         self.before_read_hook = None
+        self.truncate_reads = False
+        self.username_override = None  # simulate a user store that ignores exact=true
 
     def _by_id(self, gid):
         return next(g for g in self.groups.values() if g["id"] == gid)
 
-    def get_group_by_path(self, path):
+    def get_group_by_path(self, path, deadline=None):
         return self.groups.get(path)
 
-    def get_group_role_mappings(self, gid):
+    def get_group_role_mappings(self, gid, deadline=None):
         return self.roles.get(gid, {})
 
-    def get_user_by_username(self, username):
+    def get_user_by_username(self, username, deadline=None):
+        if self.username_override:
+            return self.users.get(self.username_override)
         return self.users.get(username)
 
-    def get_user_groups_all(self, user_id):
+    def get_user_groups_all(self, user_id, deadline=None):
         if self.fail_reads_after_write and self.writes:
             raise httpx.ConnectError("read failed")
         if self.before_read_hook:
             self.before_read_hook(self, user_id)
-        return [self._by_id(g) for g in sorted(self.members.get(user_id, set()))]
+        return [self._by_id(g) for g in sorted(self.members.get(user_id, set()))], self.truncate_reads
 
-    def add_user_to_group(self, user_id, gid):
+    def add_user_to_group(self, user_id, gid, deadline=None):
         if self.fail_on == ("add", user_id):
             raise httpx.HTTPStatusError("boom", request=httpx.Request("PUT", "x"), response=httpx.Response(500))
         self.writes.append(("add", user_id, gid))
@@ -76,7 +82,7 @@ class FakeKC:
             raise httpx.ReadTimeout("response lost")
         return 204
 
-    def remove_user_from_group(self, user_id, gid):
+    def remove_user_from_group(self, user_id, gid, deadline=None):
         if self.fail_on == ("remove", user_id):
             raise httpx.HTTPStatusError("boom", request=httpx.Request("DELETE", "x"), response=httpx.Response(500))
         self.writes.append(("remove", user_id, gid))
@@ -138,6 +144,29 @@ class TestPlan:
         kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}
         p = plan_changes(kc, cfg, [_swap()[0]])
         assert p["ok"] is True and p["rows"][0]["status"] == "no-op"
+
+    def test_remove_only_non_member_is_an_error(self, kc, cfg):
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": "/Staff/HQ/General", "add": None}])
+        assert p["ok"] is False and "not a member" in p["rows"][0]["status"]
+
+    def test_already_in_add_without_remove_is_no_op(self, kc, cfg):
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": "/Staff/HQ/General", "add": "/Staff/HQ/Safety"}])
+        assert p["ok"] is True and p["rows"][0]["status"] == "no-op"
+
+    def test_username_mismatch_is_refused(self, kc, cfg):
+        kc.username_override = "bob"
+        p = plan_changes(kc, cfg, [_swap()[0]])
+        assert p["ok"] is False and "returned 'bob'" in p["rows"][0]["status"]
+
+    def test_incomplete_membership_read_is_not_ok(self, kc, cfg):
+        kc.truncate_reads = True
+        p = plan_changes(kc, cfg, _swap())
+        assert p["ok"] is False and p["digest"] is None and "time budget" in p["errors"][0]
+
+    @pytest.mark.parametrize("path", ["/Staff/../StaffOther/X", "/Staff/./HQ", "/Staff/HQ/.."])
+    def test_dot_segments_are_invalid(self, kc, cfg, path):
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": path}])
+        assert p["ok"] is False and "invalid" in p["rows"][0]["status"]
 
     def test_not_member_of_remove(self, kc, cfg):
         p = plan_changes(kc, cfg, [{"username": "alice", "remove": "/Staff/HQ/General", "add": "/Staff/Med/Office"}])
@@ -249,17 +278,17 @@ class TestApply:
         reads = {"n": 0}
 
         def hook(fake, user_id):
-            # alice: re-plan (1), before add (2), after add (3), before remove (4).
+            # alice: re-plan (1), before add (2), read-back of the add (3). The remove reuses
+            # read 3 instead of reading again.
             if user_id == "u-alice":
                 reads["n"] += 1
-                if reads["n"] == 4:
+                if reads["n"] == 3:
                     fake.members["u-alice"].discard(general)  # another admin undoes the add
 
         kc.before_read_hook = hook
         r = apply_changes(kc, cfg, [_swap()[0]], d)
-        assert r["applied"] == "partial" and "memberships changed" in r["reason"]
+        assert r["applied"] == "no" and "does not show the change" in r["reason"]
         assert [w[0] for w in kc.writes] == ["add"]  # the source group was NOT removed
-        assert r["reverse"] == [{"username": "alice", "remove": "/Staff/HQ/General", "add": None}]
 
     def test_lost_response_after_commit_is_detected(self, kc, cfg):
         d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
@@ -275,6 +304,28 @@ class TestApply:
         r = apply_changes(kc, cfg, [_swap()[0]], d)
         assert r["applied"] == "unknown" and "read-back failed" in r["reason"]
         assert r["reverse"][0]["remove"] == "/Staff/HQ/General"
+
+    def test_no_write_starts_without_budget_left(self, kc, cfg):
+        d = plan_changes(kc, cfg, _swap())["digest"]
+        r = apply_changes(kc, cfg, _swap(), d, deadline=time.monotonic() + 1)
+        assert r["applied"] == "no" and "time budget" in r["reason"] and kc.writes == []
+
+    def test_role_attached_to_destination_mid_run_stops(self, kc, cfg):
+        d = plan_changes(kc, cfg, _swap())["digest"]
+        safety = kc.groups["/Staff/HQ/Safety"]["id"]
+        reads = {"n": 0}
+
+        def hook(fake, user_id):
+            # alice: re-plan (1); bob: re-plan (2); alice before add (3), after add (4).
+            # Someone attaches a role to bob's destination after alice's add.
+            reads["n"] += 1
+            if reads["n"] == 4:
+                fake.roles[safety] = {"realmMappings": [{"name": "admin"}]}
+
+        kc.before_read_hook = hook
+        r = apply_changes(kc, cfg, _swap(), d)
+        assert r["applied"] == "partial" and "no longer writable" in r["reason"]
+        assert ("add", "u-bob", safety) not in kc.writes
 
     def test_no_op_rows_are_skipped(self, kc, cfg):
         kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}
