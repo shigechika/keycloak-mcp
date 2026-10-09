@@ -129,6 +129,7 @@ pip install -e .
 | `KEYCLOAK_GROUP_WRITE_ROOT` | Enables the opt-in group-change tools (`plan_group_changes`, `apply_group_changes`) and confines them to groups below this absolute path (e.g. `/Staff`). Unset, empty or malformed: the two tools are not registered at all. Set it only on a deployment that puts a human approval step in front of the server. | *unset* |
 | `KEYCLOAK_PROTECTED_GROUPS` | `;`-separated full group paths that the group-change tools refuse to add to or remove from (descendants included). A malformed entry disables the group-change tools rather than silently dropping the protection. | *unset* |
 | `KEYCLOAK_GROUP_BATCH_MAX` | Maximum rows per group-change call. | `30` |
+| `KEYCLOAK_GROUP_MODE` | `multi` (KeyCloak's default: a user can be in many groups) or `single` for a deployment where adding a group replaces every other membership (for example an event listener that keeps one group per user). Any other value disables the group tools. See *Group changes*. | `multi` |
 | `KEYCLOAK_GROUP_DEADLINE` | Time budget (seconds) for the group-change tools. A batch of 30 users needs more than the default 45 s; raise it where nothing with a ~60 s timeout sits in front of the server (for example a client that spawns it directly). Unset: `KEYCLOAK_DEADLINE`. | *unset* |
 
 ### KeyCloak client setup
@@ -175,10 +176,17 @@ deployment that shares the binary without an approval step never exposes them.
   right before adding, re-reads memberships before each write and reads them back after it, and stops at the first
   mismatch, error or exhausted time budget (`KEYCLOAK_GROUP_DEADLINE`). It does not start a
   user whose operations cannot all finish in the time left, so a stop does not split an add
-  from its remove. Some deployments keep one group per user and drop the old group when a
-  new one is added; when the read-back after the add shows exactly that, the move counts as
-  done and the remove is not sent. `applied` is `yes`,
+  from its remove. `applied` is `yes`,
   `no`, `partial` or `unknown` (a write that could not be read back).
+- With `KEYCLOAK_GROUP_MODE=single` a move is one add: the server drops the old group
+  itself, so no DELETE is sent and the read-back must show the destination alone. A row
+  must name the group to add (a remove-only row would leave the user in no group). An
+  omitted `remove` is filled in with the user's current group so the approver sees what
+  is left, and every group that will be left is vetted like a `remove`. A user who is
+  already in the destination plus other groups is refused (fix them by hand: the server
+  does nothing on a repeated add, so the extra groups would stay). Set it when your
+  KeyCloak behaves this way; in `multi` mode such a server makes every move stop as a
+  concurrent change.
 - Refused targets: anything outside the root, the root itself, protected groups and their
   descendants, and any group that carries realm or client role mappings directly or
   through an ancestor.

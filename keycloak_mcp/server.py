@@ -1088,6 +1088,8 @@ def plan_group_changes(changes: list[dict]) -> dict:
         changes: List of objects ``{"username": "<exact username>", "remove": "<full group
             path or null>", "add": "<full group path or null>"}``. Paths are exact and
             absolute (e.g. ``/Staff/Faculty/Office/Section``); partial names are not matched.
+            When the server is configured for one group per user, ``add`` is required and an
+            omitted ``remove`` is filled with the user's current group.
 
     Returns a dict with ``ok`` (True only when every row is ``ok`` or ``no-op``), ``digest``
     (covers the resolved IDs, each user's current direct groups and the server's policy;

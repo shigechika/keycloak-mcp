@@ -70,6 +70,9 @@ class GroupWriteConfig:
     root: str
     protected: tuple[str, ...] = field(default_factory=tuple)
     batch_max: int = BATCH_MAX_DEFAULT
+    #: ``multi`` (KeyCloak default: a user can be in many groups) or ``single`` (the server
+    #: keeps one group per user: adding a group replaces every other membership).
+    mode: str = "multi"
 
     def policy(self) -> dict[str, Any]:
         """The policy fields that a digest must cover."""
@@ -78,6 +81,7 @@ class GroupWriteConfig:
             "root": self.root,
             "protected": sorted(self.protected),
             "batch_max": self.batch_max,
+            "mode": self.mode,
         }
 
 
@@ -98,7 +102,8 @@ def load_config(environ: dict[str, str] | None = None) -> GroupWriteConfig | Non
     is unset, empty or malformed the group tools are not registered and any direct call is
     refused. ``KEYCLOAK_PROTECTED_GROUPS`` is a ``;``-separated list of full paths (malformed
     entries make the whole config invalid, so a typo cannot silently drop a protection).
-    ``KEYCLOAK_GROUP_BATCH_MAX`` caps rows per call (default 30).
+    ``KEYCLOAK_GROUP_BATCH_MAX`` caps rows per call (default 30). ``KEYCLOAK_GROUP_MODE`` is
+    ``multi`` (default) or ``single``; any other value disables writes.
     """
     env = os.environ if environ is None else environ
     root = env.get("KEYCLOAK_GROUP_WRITE_ROOT", "").strip()
@@ -118,11 +123,15 @@ def load_config(environ: dict[str, str] | None = None) -> GroupWriteConfig | Non
         return None
     if batch_max <= 0:
         return None
+    mode = env.get("KEYCLOAK_GROUP_MODE", "multi").strip() or "multi"
+    if mode not in ("multi", "single"):
+        return None
     return GroupWriteConfig(
         realm=env.get("KEYCLOAK_REALM", "master"),
         root=root,
         protected=tuple(protected),
         batch_max=batch_max,
+        mode=mode,
     )
 
 
@@ -261,6 +270,42 @@ def _decide(row: dict) -> None:
     row["after_ids"] = sorted(after)
 
 
+def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
+    """Like :func:`_decide` for a server that keeps one group per user.
+
+    Adding is the whole move: the server drops every other membership itself, so no DELETE
+    is sent. Every group that will be left is vetted like a ``remove``. A row without
+    ``add`` is refused (it would leave the user in no group). When ``remove`` is omitted
+    and the user has exactly one group, it is filled in so the approver sees what is left.
+    """
+    if row["add"] is None:
+        row["status"] = "this server keeps one group per user; a row must name the group to add"
+        return
+    cur = set(row["current_ids"])
+    if row["add_id"] in cur and len(cur) > 1:
+        # The server does nothing when the user is already a direct member, so the extra
+        # memberships would stay. Fix such users by hand.
+        row["status"] = f"user is in {len(cur)} groups including '{row['add']}'; fix the memberships by hand"
+        return
+    if row["remove"] is not None and row["remove_id"] not in cur:
+        row["status"] = f"not a member of '{row['remove']}'"
+        return
+    by_id = {g["id"]: g.get("path", g.get("name", "")) for g in current}
+    left = sorted(by_id[g] for g in cur - {row["add_id"]})
+    for path in left:
+        g, why = resolver.vet(path)
+        if g is None:
+            row["status"] = f"the move would also leave a group that is not writable: {why}"
+            return
+    if row["remove"] is None and len(left) == 1:
+        row["remove"] = left[0]
+        row["remove_id"] = next(i for i, p in by_id.items() if p == left[0])
+    row["replaced"] = left
+    row["ops"] = [] if cur == {row["add_id"]} else ["add"]
+    row["status"] = OK if row["ops"] else NO_OP
+    row["after_ids"] = [row["add_id"]]
+
+
 def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None = None) -> dict[str, Any]:
     """Validate ``changes`` against KeyCloak without writing anything.
 
@@ -327,13 +372,17 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
             else:
                 row["user_id"] = user["id"]
                 current = _groups(kc, user["id"], deadline)
+                row_groups = current
                 row["current_ids"] = sorted(g["id"] for g in current)
                 row["current"] = sorted(g.get("path", g.get("name", "")) for g in current)
             if problems:
                 row["status"] = "; ".join(problems)
                 rows.append(row)
                 continue
-            _decide(row)
+            if cfg.mode == "single":
+                _decide_single(row, row_groups, resolver)
+            else:
+                _decide(row)
             rows.append(row)
     except (_OutOfTime, DeadlineExceeded) as exc:
         return {
@@ -367,9 +416,8 @@ def apply_changes(
     right before it is added. A user is not started unless ``WRITE_RESERVE_SECONDS`` per
     operation of ``deadline`` remain, and no write starts with less than one reserve left;
     the run stops there with what was done so far. A write that raised but is confirmed by
-    the read-back counts as done. When adding the destination also removed the source and
-    nothing else (a server that keeps one group per user), the move counts as done and the
-    remove is not sent. When a write raises,
+    the read-back counts as done. In ``single`` mode the add is the whole move: the expected
+    read-back is the destination alone, and no DELETE is sent. When a write raises,
     memberships are read again to learn whether it took effect; if that read also fails the
     outcome is ``unknown``. ``reverse`` lists, as changes for a new plan, the operations
     that took effect or may have.
@@ -398,6 +446,9 @@ def apply_changes(
             item = rev.setdefault(row["username"], {"username": row["username"], "remove": None, "add": None})
             if op == "add":
                 item["remove"] = row["add"]
+                if cfg.mode == "single":
+                    replaced = row.get("replaced") or []
+                    item["add"] = replaced[0] if len(replaced) == 1 else None
             else:
                 item["add"] = row["remove"]
         return list(rev.values())
@@ -420,17 +471,15 @@ def apply_changes(
             # and the remove leaves them in both groups.
             record = {"username": row["username"], "op": ops[0], "group": row.get(ops[0])}
             return _stop(record, "stopped: time budget reached before this user")
-        removed_by_server = False
         for op in ops:
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
-            target = (expected | {gid}) if op == "add" else (expected - {gid})
+            if op == "add":
+                # single: the server replaces every other membership with the new one.
+                target = {gid} if cfg.mode == "single" else (expected | {gid})
+            else:
+                target = expected - {gid}
             record: dict[str, Any] = {"username": row["username"], "op": op, "group": path}
-            if op == "remove" and removed_by_server:
-                record.update(before=sorted(expected), after=sorted(expected))
-                record["result"] = "done (the server removed it together with the add)"
-                operations.append(record)
-                continue
             left = _remaining(deadline)
             if left is not None and left < WRITE_RESERVE_SECONDS:
                 return _stop(record, "stopped: time budget reached before this operation")
@@ -480,19 +529,6 @@ def apply_changes(
                 record["result"] = "done"
                 if write_error:
                     record["result"] = f"done (error reported but the change took effect: {write_error})"
-                operations.append(record)
-                continue
-            if op == "add" and "remove" in ops and after == target - {row["remove_id"]}:
-                # Some deployments replace a user's group when another is added (one group
-                # per user): the source vanished with the add and nothing else changed. The
-                # move is complete; the remove is not sent.
-                done.append((row, "add"))
-                done.append((row, "remove"))
-                expected = after
-                removed_by_server = True
-                record["result"] = "done (the server also removed the source group)"
-                if write_error:
-                    record["result"] += f"; error reported: {write_error}"
                 operations.append(record)
                 continue
             if after == before:
