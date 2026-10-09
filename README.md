@@ -129,6 +129,7 @@ pip install -e .
 | `KEYCLOAK_GROUP_WRITE_ROOT` | Enables the opt-in group-change tools (`plan_group_changes`, `apply_group_changes`) and confines them to groups below this absolute path (e.g. `/Staff`). Unset, empty or malformed: the two tools are not registered at all. Set it only on a deployment that puts a human approval step in front of the server. | *unset* |
 | `KEYCLOAK_PROTECTED_GROUPS` | `;`-separated full group paths that the group-change tools refuse to add to or remove from (descendants included). A malformed entry disables the group-change tools rather than silently dropping the protection. | *unset* |
 | `KEYCLOAK_GROUP_BATCH_MAX` | Maximum rows per group-change call. | `30` |
+| `KEYCLOAK_GROUP_MODE` | `multi` (KeyCloak's default: a user can be in many groups) or `single` for a deployment where adding a group replaces every other membership (for example an event listener that keeps one group per user). Any other value disables the group tools. See *Group changes*. | `multi` |
 | `KEYCLOAK_GROUP_DEADLINE` | Time budget (seconds) for the group-change tools. A batch of 30 users needs more than the default 45 s; raise it where nothing with a ~60 s timeout sits in front of the server (for example a client that spawns it directly). Unset: `KEYCLOAK_DEADLINE`. | *unset* |
 
 ### KeyCloak client setup
@@ -177,6 +178,17 @@ deployment that shares the binary without an approval step never exposes them.
   user whose operations cannot all finish in the time left, so a stop does not split an add
   from its remove. `applied` is `yes`,
   `no`, `partial` or `unknown` (a write that could not be read back).
+- With `KEYCLOAK_GROUP_MODE=single` a move is one add: the server drops the old group
+  itself, so no DELETE is sent and the read-back must show the destination alone. A row
+  must name the group to add (a remove-only row would leave the user in no group). An
+  omitted `remove` is filled in with the user's current group so the approver sees what
+  is left, and that group is vetted like a `remove` at plan time and again right before
+  the add. A user in more than one group breaks the server's rule and is refused (fix them
+  by hand). Users whose previous state a plan cannot restore (they had no group, or the
+  server turned out not to replace) are listed in `manual_restore` instead of `reverse`.
+  Set it when your KeyCloak behaves this way; in `multi` mode such a server makes every
+  move stop as a concurrent change, and in `single` mode a server that keeps the old group
+  makes the move stop with a message that the mode does not match.
 - Refused targets: anything outside the root, the root itself, protected groups and their
   descendants, and any group that carries realm or client role mappings directly or
   through an ancestor.

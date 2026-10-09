@@ -70,6 +70,9 @@ class GroupWriteConfig:
     root: str
     protected: tuple[str, ...] = field(default_factory=tuple)
     batch_max: int = BATCH_MAX_DEFAULT
+    #: ``multi`` (KeyCloak default: a user can be in many groups) or ``single`` (the server
+    #: keeps one group per user: adding a group replaces every other membership).
+    mode: str = "multi"
 
     def policy(self) -> dict[str, Any]:
         """The policy fields that a digest must cover."""
@@ -78,6 +81,7 @@ class GroupWriteConfig:
             "root": self.root,
             "protected": sorted(self.protected),
             "batch_max": self.batch_max,
+            "mode": self.mode,
         }
 
 
@@ -98,7 +102,8 @@ def load_config(environ: dict[str, str] | None = None) -> GroupWriteConfig | Non
     is unset, empty or malformed the group tools are not registered and any direct call is
     refused. ``KEYCLOAK_PROTECTED_GROUPS`` is a ``;``-separated list of full paths (malformed
     entries make the whole config invalid, so a typo cannot silently drop a protection).
-    ``KEYCLOAK_GROUP_BATCH_MAX`` caps rows per call (default 30).
+    ``KEYCLOAK_GROUP_BATCH_MAX`` caps rows per call (default 30). ``KEYCLOAK_GROUP_MODE`` is
+    ``multi`` (default) or ``single``; any other value disables writes.
     """
     env = os.environ if environ is None else environ
     root = env.get("KEYCLOAK_GROUP_WRITE_ROOT", "").strip()
@@ -118,11 +123,15 @@ def load_config(environ: dict[str, str] | None = None) -> GroupWriteConfig | Non
         return None
     if batch_max <= 0:
         return None
+    mode = env.get("KEYCLOAK_GROUP_MODE", "multi").strip().lower() or "multi"
+    if mode not in ("multi", "single"):
+        return None
     return GroupWriteConfig(
         realm=env.get("KEYCLOAK_REALM", "master"),
         root=root,
         protected=tuple(protected),
         batch_max=batch_max,
+        mode=mode,
     )
 
 
@@ -261,6 +270,46 @@ def _decide(row: dict) -> None:
     row["after_ids"] = sorted(after)
 
 
+def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
+    """Like :func:`_decide` for a server that keeps one group per user.
+
+    Adding is the whole move: the server drops every other membership itself, so no DELETE
+    is sent. A row without ``add`` is refused (it would leave the user in no group). A user
+    in more than one group breaks the server's own rule and is refused: fix them by hand.
+    The group that will be left is vetted like a ``remove`` and, when ``remove`` is
+    omitted, filled in so the approver sees it.
+    """
+    if row["add"] is None:
+        row["status"] = "this server keeps one group per user; a row must name the group to add"
+        return
+    groups = [(g["id"], g.get("path", g.get("name", ""))) for g in current]
+    if [gid for gid, _ in groups] == [row["add_id"]]:
+        # Already moved (or already there): nothing to do, whatever ``remove`` says.
+        row["replaced"] = []
+        row["ops"] = []
+        row["status"] = NO_OP
+        row["after_ids"] = [row["add_id"]]
+        return
+    if len(groups) > 1:
+        paths = ", ".join(sorted(p for _, p in groups))
+        row["status"] = f"user is in {len(groups)} groups ({paths}) although this server keeps one; fix them by hand"
+        return
+    if row["remove"] is not None and (not groups or groups[0][0] != row["remove_id"]):
+        row["status"] = f"not a member of '{row['remove']}'"
+        return
+    if groups:
+        left_id, left_path = groups[0]
+        g, why = resolver.vet(left_path)
+        if g is None:
+            row["status"] = f"the move would also leave a group that is not writable: {why}"
+            return
+        row["remove"], row["remove_id"] = left_path, left_id
+    row["replaced"] = [row["remove"]] if row["remove"] else []
+    row["ops"] = ["add"]
+    row["status"] = OK
+    row["after_ids"] = [row["add_id"]]
+
+
 def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None = None) -> dict[str, Any]:
     """Validate ``changes`` against KeyCloak without writing anything.
 
@@ -333,7 +382,10 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
                 row["status"] = "; ".join(problems)
                 rows.append(row)
                 continue
-            _decide(row)
+            if cfg.mode == "single":
+                _decide_single(row, current, resolver)
+            else:
+                _decide(row)
             rows.append(row)
     except (_OutOfTime, DeadlineExceeded) as exc:
         return {
@@ -359,7 +411,7 @@ def apply_changes(
     """Re-plan, require ``expected_digest``, then apply add-before-remove per user.
 
     Returns ``{"applied": "yes"|"no"|"partial"|"unknown", "reason", "plan", "operations",
-    "reverse"}``. Nothing is written unless the fresh plan is ``ok`` and its digest equals
+    "reverse", "manual_restore"}``. Nothing is written unless the fresh plan is ``ok`` and its digest equals
     ``expected_digest``. For each user the full expected membership set is carried from the
     plan through every operation: the set read before each write and the set read back
     after it must equal what is expected, otherwise the run stops
@@ -367,14 +419,24 @@ def apply_changes(
     right before it is added. A user is not started unless ``WRITE_RESERVE_SECONDS`` per
     operation of ``deadline`` remain, and no write starts with less than one reserve left;
     the run stops there with what was done so far. A write that raised but is confirmed by
-    the read-back counts as done. When a write raises,
+    the read-back counts as done. In ``single`` mode the add is the whole move: the expected
+    read-back is the destination alone, and no DELETE is sent. When a write raises,
     memberships are read again to learn whether it took effect; if that read also fails the
     outcome is ``unknown``. ``reverse`` lists, as changes for a new plan, the operations
-    that took effect or may have.
+    that took effect or may have. In ``single`` mode a user who had zero or several groups
+    before the move cannot be restored by a plan; such users are listed in
+    ``manual_restore`` with their previous groups instead.
     """
     plan = plan_changes(kc, cfg, changes, deadline=deadline)
     if not plan["ok"]:
-        return {"applied": "no", "reason": "plan is not executable", "plan": plan, "operations": [], "reverse": []}
+        return {
+            "applied": "no",
+            "reason": "plan is not executable",
+            "plan": plan,
+            "operations": [],
+            "reverse": [],
+            "manual_restore": [],
+        }
     if not expected_digest or plan["digest"] != expected_digest:
         return {
             "applied": "no",
@@ -382,6 +444,7 @@ def apply_changes(
             "plan": plan,
             "operations": [],
             "reverse": [],
+            "manual_restore": [],
         }
 
     readback_deadline = None if deadline is None else deadline + READBACK_GRACE_SECONDS
@@ -390,12 +453,20 @@ def apply_changes(
     done: list[tuple[dict, str]] = []  # (row, op) that took effect or may have, in order
     uncertain = False
 
+    manual: list[dict] = []  # single mode: users a plan cannot restore (they had 0 or 2+ groups)
+
     def _reverse() -> list[dict]:
         rev: dict[str, dict] = {}
+        manual.clear()  # rebuilt on every call
         for row, op in reversed(done):
+            if cfg.mode == "single" and op == "add" and (len(row.get("replaced") or []) != 1 or row.get("_mismatch")):
+                manual.append({"username": row["username"], "previous_groups": row.get("replaced") or []})
+                continue
             item = rev.setdefault(row["username"], {"username": row["username"], "remove": None, "add": None})
             if op == "add":
                 item["remove"] = row["add"]
+                if cfg.mode == "single":
+                    item["add"] = row["replaced"][0]
             else:
                 item["add"] = row["remove"]
         return list(rev.values())
@@ -407,7 +478,15 @@ def apply_changes(
             applied = "unknown"
         else:
             applied = "partial" if done else "no"
-        return {"applied": applied, "reason": result, "plan": plan, "operations": operations, "reverse": _reverse()}
+        reverse = _reverse()
+        return {
+            "applied": applied,
+            "reason": result,
+            "plan": plan,
+            "operations": operations,
+            "reverse": reverse,
+            "manual_restore": list(manual),
+        }
 
     for row in plan["rows"]:
         expected = set(row.get("current_ids", []))
@@ -421,19 +500,29 @@ def apply_changes(
         for op in ops:
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
-            target = (expected | {gid}) if op == "add" else (expected - {gid})
+            if op == "add":
+                # single: the server replaces every other membership with the new one.
+                target = {gid} if cfg.mode == "single" else (expected | {gid})
+            else:
+                target = expected - {gid}
             record: dict[str, Any] = {"username": row["username"], "op": op, "group": path}
             left = _remaining(deadline)
             if left is not None and left < WRITE_RESERVE_SECONDS:
                 return _stop(record, "stopped: time budget reached before this operation")
             try:
-                if op == "add" and time.monotonic() - vetted_at.get(path, float("-inf")) > REVET_TTL_SECONDS:
-                    # A role or a new path may have been attached to the destination since the
-                    # plan; vet it again with no cache (at most once per REVET_TTL_SECONDS).
-                    g, why = _Resolver(kc, cfg, deadline).vet(path)
-                    if g is None or g["id"] != gid:
-                        return _stop(record, f"stopped: destination no longer writable: {why or 'group id changed'}")
-                    vetted_at[path] = time.monotonic()
+                # A role or a new path may have been attached since the plan: vet again, with no
+                # cache, the destination of an add and, in single mode, the group it will leave
+                # (at most once per REVET_TTL_SECONDS per group in one call).
+                to_vet = [(path, gid)] if op == "add" else []
+                if op == "add" and cfg.mode == "single" and row.get("remove"):
+                    to_vet.append((row["remove"], row["remove_id"]))
+                for vpath, vid in to_vet:
+                    if time.monotonic() - vetted_at.get(vpath, float("-inf")) <= REVET_TTL_SECONDS:
+                        continue
+                    g, why = _Resolver(kc, cfg, deadline).vet(vpath)
+                    if g is None or g["id"] != vid:
+                        return _stop(record, f"stopped: '{vpath}' is no longer writable: {why or 'group id changed'}")
+                    vetted_at[vpath] = time.monotonic()
                 # Read fresh before every write, even right after a read-back: someone may undo
                 # the add between it and the remove, and removing then would leave the user in
                 # neither group.
@@ -477,9 +566,27 @@ def apply_changes(
             if after == before:
                 why = f"error: {write_error}" if write_error else "stopped: read-back does not show the change"
                 return _stop(record, why)
+            if cfg.mode == "single" and op == "add" and after == before | {gid}:
+                # The add took effect but the server kept the old group: it does not keep one
+                # group per user, so KEYCLOAK_GROUP_MODE=single is wrong for it.
+                row["_mismatch"] = True
+                done.append((row, op))
+                return _stop(
+                    record, "stopped: the server kept the previous group; KEYCLOAK_GROUP_MODE=single does not match it"
+                )
             # Neither the old nor the new set: someone else changed this user meanwhile.
             if (gid in after) == (op == "add"):
+                if cfg.mode == "single" and op == "add":
+                    row["_mismatch"] = True
                 done.append((row, op))
             return _stop(record, "stopped: memberships changed during this operation")
 
-    return {"applied": "yes", "reason": "", "plan": plan, "operations": operations, "reverse": _reverse()}
+    reverse = _reverse()
+    return {
+        "applied": "yes",
+        "reason": "",
+        "plan": plan,
+        "operations": operations,
+        "reverse": reverse,
+        "manual_restore": list(manual),
+    }

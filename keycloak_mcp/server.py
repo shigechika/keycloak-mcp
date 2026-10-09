@@ -7,6 +7,7 @@ Infinispan-safe: does not create user sessions or use userinfo endpoint.
 import functools
 import inspect
 import ipaddress
+import logging
 import math
 import os
 import secrets
@@ -1088,6 +1089,8 @@ def plan_group_changes(changes: list[dict]) -> dict:
         changes: List of objects ``{"username": "<exact username>", "remove": "<full group
             path or null>", "add": "<full group path or null>"}``. Paths are exact and
             absolute (e.g. ``/Staff/Faculty/Office/Section``); partial names are not matched.
+            When the server is configured for one group per user, ``add`` is required and an
+            omitted ``remove`` is filled with the user's current group.
 
     Returns a dict with ``ok`` (True only when every row is ``ok`` or ``no-op``), ``digest``
     (covers the resolved IDs, each user's current direct groups and the server's policy;
@@ -1125,7 +1128,9 @@ def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
     effect because it could not be read back; check the user before retrying). Also
     ``reason``, the fresh ``plan``, per-operation ``operations`` (before/after memberships
     and HTTP status) and ``reverse``: changes that would undo what took effect or may have.
-    ``reverse`` is a proposal for a new plan/approval, never applied automatically;
+    ``manual_restore`` lists users whose previous groups a plan cannot bring back (one group
+    per user, and they had none or several) with those groups. ``reverse`` is a proposal for a
+    new plan/approval, never applied automatically;
     restoring memberships does not undo access that happened while they were wrong.
     """
     return apply_changes(
@@ -1140,6 +1145,12 @@ def register_group_tools(server) -> bool:
     binary without an approval step in front of it never expose a membership write.
     """
     if load_config() is None:
+        if os.environ.get("KEYCLOAK_GROUP_WRITE_ROOT", "").strip():
+            # Root is set but another KEYCLOAK_GROUP_* value is invalid: say why the tools are missing.
+            logging.getLogger(__name__).warning(
+                "group-change tools not registered: invalid KEYCLOAK_GROUP_WRITE_ROOT, "
+                "KEYCLOAK_PROTECTED_GROUPS, KEYCLOAK_GROUP_BATCH_MAX or KEYCLOAK_GROUP_MODE"
+            )
         return False
     server.tool()(plan_group_changes)
     server.tool()(apply_group_changes)

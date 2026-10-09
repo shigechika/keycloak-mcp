@@ -50,6 +50,7 @@ class FakeKC:
         self.fail_reads_after_write = False
         self.before_read_hook = None
         self.truncate_reads = False
+        self.replace_on_add = False  # a server that keeps one group per user
         self.username_override = None  # simulate a user store that ignores exact=true
 
     def _by_id(self, gid):
@@ -77,6 +78,9 @@ class FakeKC:
         if self.fail_on == ("add", user_id):
             raise httpx.HTTPStatusError("boom", request=httpx.Request("PUT", "x"), response=httpx.Response(500))
         self.writes.append(("add", user_id, gid))
+        if self.replace_on_add and gid not in self.members.get(user_id, set()):
+            # The server's listener only fires when the membership is new.
+            self.members[user_id] = set()
         self.members.setdefault(user_id, set()).add(gid)
         if self.commit_then_raise == ("add", user_id):
             raise httpx.ReadTimeout("response lost")
@@ -383,6 +387,12 @@ class TestApply:
         assert r["applied"] == "partial" and "no longer writable" in r["reason"]
         assert ("add", "u-bob", safety) not in kc.writes
 
+    def test_multi_mode_does_not_guess_a_replacing_server(self, kc, cfg):
+        kc.replace_on_add = True
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        r = apply_changes(kc, cfg, [_swap()[0]], d)
+        assert r["applied"] == "partial" and "memberships changed" in r["reason"]
+
     def test_no_op_rows_are_skipped(self, kc, cfg):
         kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}
         changes = [_swap()[0]]
@@ -410,3 +420,102 @@ class TestRegistration:
         monkeypatch.delenv("KEYCLOAK_GROUP_WRITE_ROOT", raising=False)
         with pytest.raises(server.ToolError, match="not enabled"):
             server.apply_group_changes([], "x")
+
+
+@pytest.fixture()
+def single():
+    return GroupWriteConfig(realm="test", root=ROOT, protected=(PROTECTED,), batch_max=5, mode="single")
+
+
+class TestSingleMode:
+    def test_mode_from_env(self):
+        assert load_config({"KEYCLOAK_GROUP_WRITE_ROOT": "/Staff", "KEYCLOAK_GROUP_MODE": "single"}).mode == "single"
+        assert load_config({"KEYCLOAK_GROUP_WRITE_ROOT": "/Staff"}).mode == "multi"
+        assert load_config({"KEYCLOAK_GROUP_WRITE_ROOT": "/Staff", "KEYCLOAK_GROUP_MODE": "one"}) is None
+        assert load_config({"KEYCLOAK_GROUP_WRITE_ROOT": "/Staff", "KEYCLOAK_GROUP_MODE": " Single "}).mode == "single"
+
+    def test_mode_is_in_the_digest(self, kc, cfg, single):
+        assert plan_changes(kc, cfg, _swap())["digest"] != plan_changes(kc, single, _swap())["digest"]
+
+    def test_move_is_one_add_and_no_delete(self, kc, single):
+        kc.replace_on_add = True
+        p = plan_changes(kc, single, _swap())
+        assert p["ok"] and [r["ops"] for r in p["rows"]] == [["add"], ["add"]]
+        r = apply_changes(kc, single, _swap(), p["digest"])
+        assert r["applied"] == "yes" and [w[0] for w in kc.writes] == ["add", "add"]
+        assert kc.members["u-alice"] == {kc.groups["/Staff/HQ/General"]["id"]}
+        rev = {x["username"]: x for x in r["reverse"]}
+        assert rev["alice"] == {"username": "alice", "remove": "/Staff/HQ/General", "add": "/Staff/HQ/Safety"}
+
+    def test_omitted_remove_is_filled_with_the_current_group(self, kc, single):
+        p = plan_changes(kc, single, [{"username": "alice", "add": "/Staff/HQ/General"}])
+        row = p["rows"][0]
+        assert p["ok"] and row["remove"] == "/Staff/HQ/Safety" and row["replaced"] == ["/Staff/HQ/Safety"]
+
+    def test_remove_only_is_refused(self, kc, single):
+        p = plan_changes(kc, single, [{"username": "alice", "remove": "/Staff/HQ/Safety", "add": None}])
+        assert p["ok"] is False and "one group per user" in p["rows"][0]["status"]
+
+    def test_wrong_remove_is_refused(self, kc, single):
+        p = plan_changes(kc, single, [{"username": "alice", "remove": "/Staff/HQ/General", "add": "/Staff/Med/Office"}])
+        assert p["ok"] is False and "not a member" in p["rows"][0]["status"]
+
+    def test_leaving_a_protected_group_is_refused(self, kc, single):
+        kc.members["u-alice"] = {kc.groups[PROTECTED]["id"]}
+        p = plan_changes(kc, single, [{"username": "alice", "add": "/Staff/HQ/General"}])
+        assert p["ok"] is False and "not writable" in p["rows"][0]["status"] and "protected" in p["rows"][0]["status"]
+
+    def test_extra_membership_including_destination_is_refused(self, kc, single):
+        kc.members["u-alice"].add(kc.groups["/Staff/HQ/General"]["id"])
+        p = plan_changes(kc, single, [{"username": "alice", "add": "/Staff/HQ/General"}])
+        assert p["ok"] is False and "fix them by hand" in p["rows"][0]["status"]
+
+    def test_user_in_several_groups_is_refused(self, kc, single):
+        kc.members["u-alice"].add(kc.groups["/Staff/Med/Office"]["id"])
+        p = plan_changes(kc, single, [{"username": "alice", "add": "/Staff/HQ/General"}])
+        status = p["rows"][0]["status"]
+        assert p["ok"] is False and "fix them by hand" in status and "/Staff/Med/Office" in status
+
+    def test_user_without_groups_moves_and_needs_manual_restore(self, kc, single):
+        kc.replace_on_add = True
+        kc.members["u-alice"] = set()
+        changes = [{"username": "alice", "add": "/Staff/HQ/General"}]
+        p = plan_changes(kc, single, changes)
+        assert p["ok"] and p["rows"][0]["remove"] is None and p["rows"][0]["replaced"] == []
+        r = apply_changes(kc, single, changes, p["digest"])
+        assert r["applied"] == "yes" and r["reverse"] == []
+        assert r["manual_restore"] == [{"username": "alice", "previous_groups": []}]
+
+    def test_left_group_is_vetted_again_before_the_add(self, kc, single):
+        kc.replace_on_add = True
+        d = plan_changes(kc, single, [_swap()[0]])["digest"]
+        safety = kc.groups["/Staff/HQ/Safety"]["id"]
+
+        def hook(fake, user_id):
+            fake.roles[safety] = {"realmMappings": [{"name": "admin"}]}  # after the re-plan's read
+
+        kc.before_read_hook = hook
+        r = apply_changes(kc, single, [_swap()[0]], d)
+        assert r["applied"] == "no" and "no longer writable" in r["reason"] and kc.writes == []
+
+    def test_early_refusal_has_manual_restore(self, kc, single):
+        r = apply_changes(kc, single, [_swap()[0]], "wrong")
+        assert r["applied"] == "no" and r["manual_restore"] == []
+
+    def test_already_there_is_no_op(self, kc, single):
+        p = plan_changes(kc, single, [{"username": "alice", "add": "/Staff/HQ/Safety"}])
+        assert p["ok"] and p["rows"][0]["status"] == "no-op"
+
+    def test_server_that_did_not_replace_stops(self, kc, single):
+        # Configured as single, but the server kept the old group: say so and do not offer
+        # a reverse row that single-mode planning would refuse.
+        d = plan_changes(kc, single, [_swap()[0]])["digest"]
+        r = apply_changes(kc, single, [_swap()[0]], d)
+        assert r["applied"] == "partial" and "does not match" in r["reason"]
+        assert r["reverse"] == []
+        assert r["manual_restore"] == [{"username": "alice", "previous_groups": ["/Staff/HQ/Safety"]}]
+
+    def test_completed_move_with_explicit_remove_is_no_op(self, kc, single):
+        kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}
+        p = plan_changes(kc, single, [_swap()[0]])
+        assert p["ok"] and p["rows"][0]["status"] == "no-op"

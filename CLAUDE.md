@@ -52,7 +52,8 @@ KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
 Group changes (`keycloak_mcp/group_changes.py`, registered by
 `server.register_group_tools`): `KEYCLOAK_GROUP_WRITE_ROOT` (unset = tools not
 registered), `KEYCLOAK_PROTECTED_GROUPS` (`;`-separated full paths, each must
-exist), `KEYCLOAK_GROUP_BATCH_MAX` (default 30), `KEYCLOAK_GROUP_DEADLINE`
+exist), `KEYCLOAK_GROUP_BATCH_MAX` (default 30), `KEYCLOAK_GROUP_MODE` (`multi` default /
+`single` = adding replaces every other membership, no DELETE sent), `KEYCLOAK_GROUP_DEADLINE`
 (default `KEYCLOAK_DEADLINE`). The digest is a staleness check, not an approval
 token; the approval gate belongs to the client.
 `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` (default unset, comma-separated attribute
