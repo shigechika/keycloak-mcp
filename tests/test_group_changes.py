@@ -43,7 +43,9 @@ class FakeKC:
             "u-bob": {self.groups["/Staff/HQ/General"]["id"]},
         }
         self.writes = []
-        self.fail_on = None  # (op, user_id) -> raise
+        self.fail_on = None  # (op, user_id) -> raise before committing
+        self.commit_then_raise = None  # (op, user_id) -> commit, then raise (lost response)
+        self.fail_reads_after_write = False
         self.before_read_hook = None
 
     def _by_id(self, gid):
@@ -59,6 +61,8 @@ class FakeKC:
         return self.users.get(username)
 
     def get_user_groups_all(self, user_id):
+        if self.fail_reads_after_write and self.writes:
+            raise httpx.ConnectError("read failed")
         if self.before_read_hook:
             self.before_read_hook(self, user_id)
         return [self._by_id(g) for g in sorted(self.members.get(user_id, set()))]
@@ -68,6 +72,8 @@ class FakeKC:
             raise httpx.HTTPStatusError("boom", request=httpx.Request("PUT", "x"), response=httpx.Response(500))
         self.writes.append(("add", user_id, gid))
         self.members.setdefault(user_id, set()).add(gid)
+        if self.commit_then_raise == ("add", user_id):
+            raise httpx.ReadTimeout("response lost")
         return 204
 
     def remove_user_from_group(self, user_id, gid):
@@ -221,7 +227,7 @@ class TestApply:
         kc.before_read_hook = hook
         r = apply_changes(kc, cfg, _swap(), d)
         assert r["applied"] == "partial"
-        assert "membership changed" in r["reason"]
+        assert "memberships changed" in r["reason"]
         assert [x["username"] for x in r["reverse"]] == ["alice"]
 
     def test_error_after_first_user_is_partial(self, kc, cfg):
@@ -236,6 +242,39 @@ class TestApply:
         kc.fail_on = ("add", "u-alice")
         r = apply_changes(kc, cfg, _swap(), d)
         assert r["applied"] == "no" and r["reverse"] == []
+
+    def test_destination_removed_between_add_and_remove_stops(self, kc, cfg):
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        general = kc.groups["/Staff/HQ/General"]["id"]
+        reads = {"n": 0}
+
+        def hook(fake, user_id):
+            # alice: re-plan (1), before add (2), after add (3), before remove (4).
+            if user_id == "u-alice":
+                reads["n"] += 1
+                if reads["n"] == 4:
+                    fake.members["u-alice"].discard(general)  # another admin undoes the add
+
+        kc.before_read_hook = hook
+        r = apply_changes(kc, cfg, [_swap()[0]], d)
+        assert r["applied"] == "partial" and "memberships changed" in r["reason"]
+        assert [w[0] for w in kc.writes] == ["add"]  # the source group was NOT removed
+        assert r["reverse"] == [{"username": "alice", "remove": "/Staff/HQ/General", "add": None}]
+
+    def test_lost_response_after_commit_is_detected(self, kc, cfg):
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        kc.commit_then_raise = ("add", "u-alice")
+        r = apply_changes(kc, cfg, [_swap()[0]], d)
+        assert r["applied"] == "partial" and "took effect" in r["reason"]
+        assert r["reverse"][0]["remove"] == "/Staff/HQ/General"
+
+    def test_unconfirmable_write_is_unknown(self, kc, cfg):
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        kc.commit_then_raise = ("add", "u-alice")
+        kc.fail_reads_after_write = True
+        r = apply_changes(kc, cfg, [_swap()[0]], d)
+        assert r["applied"] == "unknown" and "read-back failed" in r["reason"]
+        assert r["reverse"][0]["remove"] == "/Staff/HQ/General"
 
     def test_no_op_rows_are_skipped(self, kc, cfg):
         kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}

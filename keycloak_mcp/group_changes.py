@@ -273,11 +273,14 @@ def _ids(kc, user_id: str) -> set[str]:
 def apply_changes(kc, cfg: GroupWriteConfig, changes: Any, expected_digest: str) -> dict[str, Any]:
     """Re-plan, require ``expected_digest``, then apply add-before-remove per user.
 
-    Returns ``{"applied": "yes"|"no"|"partial", "reason", "plan", "operations", "reverse"}``.
-    Nothing is written unless the fresh plan is ``ok`` and its digest equals
-    ``expected_digest``. Every write is preceded by a membership read that must still match
-    the premise and followed by a read-back; on any mismatch or error the run stops and
-    ``reverse`` lists, as changes for a new plan, the operations that did take effect.
+    Returns ``{"applied": "yes"|"no"|"partial"|"unknown", "reason", "plan", "operations",
+    "reverse"}``. Nothing is written unless the fresh plan is ``ok`` and its digest equals
+    ``expected_digest``. For each user the full expected membership set is carried from the
+    plan through every operation: the set read before a write and the set read back after it
+    must equal what is expected, otherwise the run stops (someone else changed the user in
+    between). When a write raises, memberships are read again to learn whether it took
+    effect; if that read also fails the outcome is ``unknown``. ``reverse`` lists, as changes
+    for a new plan, the operations that took effect or may have.
     """
     plan = plan_changes(kc, cfg, changes)
     if not plan["ok"]:
@@ -292,7 +295,8 @@ def apply_changes(kc, cfg: GroupWriteConfig, changes: Any, expected_digest: str)
         }
 
     operations: list[dict] = []
-    done: list[tuple[dict, str]] = []  # (row, op) that took effect, in order
+    done: list[tuple[dict, str]] = []  # (row, op) that took effect or may have, in order
+    uncertain = False
 
     def _reverse() -> list[dict]:
         rev: dict[str, dict] = {}
@@ -304,59 +308,59 @@ def apply_changes(kc, cfg: GroupWriteConfig, changes: Any, expected_digest: str)
                 item["add"] = row["remove"]
         return list(rev.values())
 
+    def _stop(record: dict, result: str) -> dict:
+        record["result"] = result
+        operations.append(record)
+        if uncertain:
+            applied = "unknown"
+        else:
+            applied = "partial" if done else "no"
+        return {"applied": applied, "reason": result, "plan": plan, "operations": operations, "reverse": _reverse()}
+
     for row in plan["rows"]:
+        expected = set(row.get("current_ids", []))
         for op in row.get("ops", []):
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
+            target = (expected | {gid}) if op == "add" else (expected - {gid})
             record: dict[str, Any] = {"username": row["username"], "op": op, "group": path}
             try:
                 before = _ids(kc, row["user_id"])
-                record["before"] = sorted(before)
-                premise = (gid not in before) if op == "add" else (gid in before)
-                if not premise:
-                    record["result"] = "stopped: membership changed before this operation"
-                    operations.append(record)
-                    return {
-                        "applied": "partial" if done else "no",
-                        "reason": record["result"],
-                        "plan": plan,
-                        "operations": operations,
-                        "reverse": _reverse(),
-                    }
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return _stop(record, f"error reading memberships before the write: {type(exc).__name__}: {exc}")
+            record["before"] = sorted(before)
+            if before != expected:
+                return _stop(record, "stopped: memberships changed before this operation")
+            try:
                 if op == "add":
                     record["status"] = kc.add_user_to_group(row["user_id"], gid)
                 else:
                     record["status"] = kc.remove_user_from_group(row["user_id"], gid)
-                # The write returned success: count it as done until a read-back says otherwise,
-                # so a failed read-back still leaves it in the reverse proposal.
-                done.append((row, op))
+                write_error = None
+            except Exception as exc:  # noqa: BLE001 - the write may still have committed
+                write_error = f"{type(exc).__name__}: {exc}"
+            try:
                 after = _ids(kc, row["user_id"])
-                record["after"] = sorted(after)
-                took = (gid in after) if op == "add" else (gid not in after)
-                if not took:
-                    done.pop()
-            except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
-                when = " after the write (state unknown)" if "status" in record else ""
-                record["result"] = f"error{when}: {type(exc).__name__}: {exc}"
+            except Exception as exc:  # noqa: BLE001 - outcome cannot be confirmed
+                done.append((row, op))
+                uncertain = True
+                why = f"write error {write_error}; " if write_error else ""
+                return _stop(record, f"unknown: {why}read-back failed: {type(exc).__name__}: {exc}")
+            record["after"] = sorted(after)
+            if after == target:
+                done.append((row, op))
+                expected = target
+                if write_error:
+                    return _stop(record, f"error reported but the change took effect: {write_error}")
+                record["result"] = "done"
                 operations.append(record)
-                return {
-                    "applied": "partial" if done else "no",
-                    "reason": record["result"],
-                    "plan": plan,
-                    "operations": operations,
-                    "reverse": _reverse(),
-                }
-            if not took:
-                record["result"] = "stopped: read-back does not show the change"
-                operations.append(record)
-                return {
-                    "applied": "partial" if done else "no",
-                    "reason": record["result"],
-                    "plan": plan,
-                    "operations": operations,
-                    "reverse": _reverse(),
-                }
-            record["result"] = "done"
-            operations.append(record)
+                continue
+            if after == before:
+                why = f"error: {write_error}" if write_error else "stopped: read-back does not show the change"
+                return _stop(record, why)
+            # Neither the old nor the new set: someone else changed this user meanwhile.
+            if (gid in after) == (op == "add"):
+                done.append((row, op))
+            return _stop(record, "stopped: memberships changed during this operation")
 
     return {"applied": "yes", "reason": "", "plan": plan, "operations": operations, "reverse": _reverse()}
