@@ -8,7 +8,9 @@ never calls the `userinfo` endpoint and never creates user sessions
 (the project describes this as "Infinispan-safe" — see README.md).
 Exposes 32 tools (users, MFA/credentials, groups, brute-force/security,
 events, admin events, sessions/clients, and a `daily_brief` morning
-report) over stdio transport.
+report) over stdio transport, plus two opt-in group-change tools
+(`plan_group_changes`, `apply_group_changes`) registered only when
+`KEYCLOAK_GROUP_WRITE_ROOT` is set.
 
 ## Commands
 
@@ -33,6 +35,8 @@ Plain-`pip` equivalents are documented in README.md's Development section.
 - `keycloak_mcp/sites.py` — `SiteClassifier`: labels IPs with a site name
   from an optional `KEYCLOAK_SITES_INI` file.
 - `keycloak_mcp/server.py` — `MCPServer` (mcp 2.x) server; all `@mcp.tool()` functions.
+- `keycloak_mcp/group_changes.py` — opt-in group moves: `plan_changes` /
+  `apply_changes` (policy, digest, add-before-remove with read-back).
 - `keycloak_mcp/__main__.py` — CLI entry point (`--check`, `--version`)
   plus a Windows-only stdout wrapper that strips CRLF back to LF.
 
@@ -45,6 +49,12 @@ caps so a wide event window or a whole-realm `get_totp_users` returns a
 disclosed partial (⚠️) instead of blowing the ~60s gateway and hammering
 KeyCloak (see `_paginate`'s `deadline`/`max_total` and `server.py`'s
 `_deadline_seconds`/`_max_events`/`_max_users`). Each `0`/negative disables.
+Group changes (`keycloak_mcp/group_changes.py`, registered by
+`server.register_group_tools`): `KEYCLOAK_GROUP_WRITE_ROOT` (unset = tools not
+registered), `KEYCLOAK_PROTECTED_GROUPS` (`;`-separated full paths, each must
+exist), `KEYCLOAK_GROUP_BATCH_MAX` (default 30), `KEYCLOAK_GROUP_DEADLINE`
+(default `KEYCLOAK_DEADLINE`). The digest is a staleness check, not an approval
+token; the approval gate belongs to the client.
 `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` (default unset, comma-separated attribute
 keys) opts specific custom user attributes into `get_user`'s output — unset,
 `get_user` never fetches or surfaces `attributes` at all (see

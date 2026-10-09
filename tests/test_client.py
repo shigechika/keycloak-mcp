@@ -194,6 +194,89 @@ class TestGetGroupByPath:
         assert "group-by-path//" not in url
         assert "%E6%95%99%E8%81%B7%E5%93%A1" in url or "教職員" in url
 
+    def test_special_characters_are_encoded(self, mock_api):
+        route = mock_api.route(method="GET", url__startswith=f"{ADMIN_BASE}/group-by-path/").mock(
+            return_value=httpx.Response(200, json={"id": "g", "path": "/a?b#c%d"})
+        )
+        KeyCloakClient().get_group_by_path("/a?b#c%d/e")
+        raw = route.calls[0].request.url.raw_path.decode()
+        assert raw.endswith("/group-by-path/a%3Fb%23c%25d/e")
+        assert route.calls[0].request.url.query == b""
+
+    @pytest.mark.parametrize("path", ["/a/../users", "/a/./b", "/.."])
+    def test_dot_segments_are_refused(self, mock_api, path):
+        with pytest.raises(ValueError):
+            KeyCloakClient().get_group_by_path(path)
+        assert not mock_api.calls
+
+    def test_slash_inside_a_segment_cannot_occur(self, mock_api):
+        route = mock_api.route(method="GET", url__startswith=f"{ADMIN_BASE}/group-by-path/").mock(
+            return_value=httpx.Response(200, json={"id": "g", "path": "/a/b"})
+        )
+        KeyCloakClient().get_group_by_path("/a/b")
+        assert route.calls[0].request.url.raw_path.decode().endswith("/group-by-path/a/b")
+
+    def test_404_is_none(self, mock_api):
+        mock_api.route(method="GET", url__startswith=f"{ADMIN_BASE}/group-by-path/").mock(
+            return_value=httpx.Response(404, json={"error": "Group path does not exist"})
+        )
+        assert KeyCloakClient().get_group_by_path("/nope") is None
+
+    def test_403_propagates(self, mock_api):
+        mock_api.route(method="GET", url__startswith=f"{ADMIN_BASE}/group-by-path/").mock(
+            return_value=httpx.Response(403)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().get_group_by_path("/x")
+
+
+class TestGroupMembershipWrites:
+    def test_add_user_to_group(self, mock_api):
+        route = mock_api.put(f"{ADMIN_BASE}/users/u1/groups/g1").mock(return_value=httpx.Response(204))
+        assert KeyCloakClient().add_user_to_group("u1", "g1") == 204
+        assert route.called
+
+    def test_remove_user_from_group(self, mock_api):
+        route = mock_api.delete(f"{ADMIN_BASE}/users/u1/groups/g1").mock(return_value=httpx.Response(204))
+        assert KeyCloakClient().remove_user_from_group("u1", "g1") == 204
+        assert route.called
+
+    def test_get_user_groups_all_pages(self, mock_api):
+        page1 = [{"id": str(i)} for i in range(100)]
+        page2 = [{"id": "last"}]
+        route = mock_api.get(f"{ADMIN_BASE}/users/u1/groups").mock(
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)]
+        )
+        groups, truncated = KeyCloakClient().get_user_groups_all("u1")
+        assert len(groups) == 101 and route.call_count == 2 and truncated is False
+
+    def test_get_user_groups_all_reports_cap(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/users/u1/groups").mock(
+            return_value=httpx.Response(200, json=[{"id": str(i)} for i in range(3)])
+        )
+        groups, truncated = KeyCloakClient().get_user_groups_all("u1", page_size=3, max_total=2)
+        assert len(groups) == 2 and truncated is True
+
+    def test_add_to_missing_group_raises(self, mock_api):
+        mock_api.put(f"{ADMIN_BASE}/users/u1/groups/gone").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().add_user_to_group("u1", "gone")
+
+    def test_remove_from_missing_group_raises(self, mock_api):
+        mock_api.delete(f"{ADMIN_BASE}/users/u1/groups/gone").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().remove_user_from_group("u1", "gone")
+
+    def test_group_without_role_mappings(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/groups/g1/role-mappings").mock(return_value=httpx.Response(200, json={}))
+        assert KeyCloakClient().get_group_role_mappings("g1") == {}
+
+    def test_get_group_role_mappings(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/groups/g1/role-mappings").mock(
+            return_value=httpx.Response(200, json={"realmMappings": [{"name": "r"}]})
+        )
+        assert KeyCloakClient().get_group_role_mappings("g1")["realmMappings"][0]["name"] == "r"
+
 
 class TestGetGroupChildrenAll:
     def test_pagination(self, mock_api):

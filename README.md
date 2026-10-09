@@ -126,6 +126,10 @@ pip install -e .
 | `KEYCLOAK_MAX_EVENTS` | Per-pagination cap on events fetched by the event tools (also bounds how deep the slow high-offset pagination goes). Over the cap the result is a disclosed partial. `0` or negative disables. | `200000` |
 | `KEYCLOAK_MAX_USERS` | Default cap on users scanned by `get_totp_users` when its `max_users` argument is `0` (each user costs one credential call). `0` or negative disables (whole realm, bounded only by `KEYCLOAK_DEADLINE`). | `5000` |
 | `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | Comma-separated custom user-attribute keys that `get_user` is allowed to surface. Unset by default: `get_user` only ever returns username/name/email/enabled/created, since the search endpoint it resolves the username through returns a brief representation with no `attributes` at all. Opting a key in makes `get_user` do one extra by-ID lookup and append that attribute's value when present. Everything else stays out of tool output. As a safety net, a whitelisted key whose name looks credential-shaped (contains `password`, `secret`, `token`, etc.) is reported as blocked rather than shown — not a guarantee, since a credential attribute named outside that pattern list still gets through. | *unset* |
+| `KEYCLOAK_GROUP_WRITE_ROOT` | Enables the opt-in group-change tools (`plan_group_changes`, `apply_group_changes`) and confines them to groups below this absolute path (e.g. `/Staff`). Unset, empty or malformed: the two tools are not registered at all. Set it only on a deployment that puts a human approval step in front of the server. | *unset* |
+| `KEYCLOAK_PROTECTED_GROUPS` | `;`-separated full group paths that the group-change tools refuse to add to or remove from (descendants included). A malformed entry disables the group-change tools rather than silently dropping the protection. | *unset* |
+| `KEYCLOAK_GROUP_BATCH_MAX` | Maximum rows per group-change call. | `30` |
+| `KEYCLOAK_GROUP_DEADLINE` | Time budget (seconds) for the group-change tools. A batch of 30 users needs more than the default 45 s; raise it where nothing with a ~60 s timeout sits in front of the server (for example a client that spawns it directly). Unset: `KEYCLOAK_DEADLINE`. | *unset* |
 
 ### KeyCloak client setup
 
@@ -135,7 +139,8 @@ pip install -e .
 
 ### Write operations
 
-Four tools change state. Everything else only reads.
+Four tools change state by default. Everything else only reads. With group changes
+enabled (below), `apply_group_changes` is a fifth.
 
 | Tool | Admin API call |
 |---|---|
@@ -149,6 +154,50 @@ server is read-only**: those four tools fail with `403` and every other tool kee
 working, so a realm can be handed to Claude for investigation without granting any
 ability to modify it. Grant `manage-users` only when account recovery or
 containment is part of the job.
+
+### Group changes (opt-in)
+
+`plan_group_changes` and `apply_group_changes` move users between groups (for example
+staff transfers). They exist only when `KEYCLOAK_GROUP_WRITE_ROOT` is set, so a
+deployment that shares the binary without an approval step never exposes them.
+
+| Tool | Admin API call |
+|---|---|
+| `plan_group_changes` | read-only: `GET /users?username=...&exact=true`, `GET /group-by-path/...`, `GET /groups/{id}/role-mappings`, `GET /users/{id}/groups` |
+| `apply_group_changes` | `PUT /users/{id}/groups/{groupId}` then `DELETE /users/{id}/groups/{groupId}` |
+
+- `plan_group_changes` resolves every user and group by exact name/path and returns, per
+  row, the current direct groups, the operations that would run and a status. Its
+  `digest` covers the resolved IDs, each user's current groups and the policy.
+- `apply_group_changes` re-plans and changes nothing unless every row is still executable
+  and the digest equals the approved one, so a membership changed by anyone since the
+  plan aborts the whole batch. It adds before it removes, vets the destination again
+  right before adding, re-reads memberships before each write and reads them back after it, and stops at the first
+  mismatch, error or exhausted time budget (`KEYCLOAK_GROUP_DEADLINE`). It does not start a
+  user whose operations cannot all finish in the time left, so a stop does not split an add
+  from its remove. `applied` is `yes`,
+  `no`, `partial` or `unknown` (a write that could not be read back).
+- Refused targets: anything outside the root, the root itself, protected groups and their
+  descendants, and any group that carries realm or client role mappings directly or
+  through an ancestor.
+- No role mappings does not mean no privilege. A group can grant access through
+  membership alone (a SAML/OIDC group mapper that a service provider checks, or an
+  authorization-services group policy). List every such group in
+  `KEYCLOAK_PROTECTED_GROUPS`; the role check cannot see them. Every protected path must
+  exist in KeyCloak: if one does not resolve (renamed, moved, different case), every plan
+  is refused until the configuration is fixed.
+- The `digest` shows that nothing changed since the plan. It does not prove that a person
+  approved the plan: any caller of `plan_group_changes` gets a valid digest. Put the
+  approval in front of `apply_group_changes`, for example a client that keeps the digest
+  itself and asks a person before each call. Treat each approval as single-use: if the
+  memberships return to the planned state (for example after `reverse`), the old digest
+  matches again.
+- The result includes `reverse`, the changes that would undo what took effect. It is a
+  proposal for a new plan and approval, never applied automatically. Restoring a
+  membership does not undo access that happened while it was wrong.
+
+Writes need `manage-users`. Depending on the KeyCloak version, reading groups and their
+role mappings may also need `query-groups`; run `plan_group_changes` once to confirm.
 
 ### Verify your setup
 

@@ -59,6 +59,7 @@ STATE_CHANGING = {
     "reset_passwords_batch",
     "logout_user",
     "set_user_enabled",
+    "apply_group_changes",
 }
 
 
@@ -270,3 +271,31 @@ def test_in_process_result_decodes_to_plain_data_on_the_installed_sdk(monkeypatc
     decoded = smoke_test._decode(raw)
     assert isinstance(decoded, dict)
     assert decoded["service"] == "keycloak-mcp"
+
+
+def test_group_tools_are_covered_when_enabled(monkeypatch):
+    """CI runs without KEYCLOAK_GROUP_WRITE_ROOT, so check the opt-in registration here."""
+    import importlib
+    import os
+
+    from keycloak_mcp import server
+
+    original = os.environ.get("KEYCLOAK_GROUP_WRITE_ROOT")
+    monkeypatch.setenv("KEYCLOAK_GROUP_WRITE_ROOT", "/Staff")
+    s = server._Server("t")
+    assert server.register_group_tools(s) is True
+    names = {tool.name for tool in asyncio.run(s.list_tools())}
+    probes = importlib.reload(smoke_probes)
+    try:
+        assert {"plan_group_changes", "apply_group_changes"} <= names
+        assert names <= set(probes.PROBES)
+        for name in names & STATE_CHANGING:
+            assert probes.PROBES[name].skip, f"{name} changes state and must be skipped"
+    finally:
+        # Restore the caller's value before reloading, so the module matches the server
+        # that the rest of this file inspects.
+        if original is None:
+            monkeypatch.delenv("KEYCLOAK_GROUP_WRITE_ROOT")
+        else:
+            monkeypatch.setenv("KEYCLOAK_GROUP_WRITE_ROOT", original)
+        importlib.reload(smoke_probes)
