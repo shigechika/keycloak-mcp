@@ -50,6 +50,7 @@ class FakeKC:
         self.fail_reads_after_write = False
         self.before_read_hook = None
         self.truncate_reads = False
+        self.replace_on_add = False  # a server that keeps one group per user
         self.username_override = None  # simulate a user store that ignores exact=true
 
     def _by_id(self, gid):
@@ -77,6 +78,8 @@ class FakeKC:
         if self.fail_on == ("add", user_id):
             raise httpx.HTTPStatusError("boom", request=httpx.Request("PUT", "x"), response=httpx.Response(500))
         self.writes.append(("add", user_id, gid))
+        if self.replace_on_add:
+            self.members[user_id] = set()
         self.members.setdefault(user_id, set()).add(gid)
         if self.commit_then_raise == ("add", user_id):
             raise httpx.ReadTimeout("response lost")
@@ -382,6 +385,24 @@ class TestApply:
         r = apply_changes(kc, cfg, _swap(), d)
         assert r["applied"] == "partial" and "no longer writable" in r["reason"]
         assert ("add", "u-bob", safety) not in kc.writes
+
+    def test_server_that_replaces_on_add_completes_the_move(self, kc, cfg):
+        kc.replace_on_add = True
+        d = plan_changes(kc, cfg, _swap())["digest"]
+        r = apply_changes(kc, cfg, _swap(), d)
+        assert r["applied"] == "yes"
+        assert [w[0] for w in kc.writes] == ["add", "add"]  # no DELETE sent
+        assert kc.members["u-alice"] == {kc.groups["/Staff/HQ/General"]["id"]}
+        assert "also removed" in r["operations"][0]["result"] and "together" in r["operations"][1]["result"]
+        rev = {x["username"]: x for x in r["reverse"]}
+        assert rev["alice"] == {"username": "alice", "remove": "/Staff/HQ/General", "add": "/Staff/HQ/Safety"}
+
+    def test_replacement_that_also_drops_other_groups_stops(self, kc, cfg):
+        kc.members["u-alice"].add(kc.groups["/Staff/Arts/Office/Accounting"]["id"])
+        kc.replace_on_add = True
+        d = plan_changes(kc, cfg, [_swap()[0]])["digest"]
+        r = apply_changes(kc, cfg, [_swap()[0]], d)
+        assert r["applied"] == "partial" and "memberships changed" in r["reason"]
 
     def test_no_op_rows_are_skipped(self, kc, cfg):
         kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}

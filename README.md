@@ -175,7 +175,9 @@ deployment that shares the binary without an approval step never exposes them.
   right before adding, re-reads memberships before each write and reads them back after it, and stops at the first
   mismatch, error or exhausted time budget (`KEYCLOAK_GROUP_DEADLINE`). It does not start a
   user whose operations cannot all finish in the time left, so a stop does not split an add
-  from its remove. `applied` is `yes`,
+  from its remove. Some deployments keep one group per user and drop the old group when a
+  new one is added; when the read-back after the add shows exactly that, the move counts as
+  done and the remove is not sent. `applied` is `yes`,
   `no`, `partial` or `unknown` (a write that could not be read back).
 - Refused targets: anything outside the root, the root itself, protected groups and their
   descendants, and any group that carries realm or client role mappings directly or

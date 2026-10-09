@@ -367,7 +367,9 @@ def apply_changes(
     right before it is added. A user is not started unless ``WRITE_RESERVE_SECONDS`` per
     operation of ``deadline`` remain, and no write starts with less than one reserve left;
     the run stops there with what was done so far. A write that raised but is confirmed by
-    the read-back counts as done. When a write raises,
+    the read-back counts as done. When adding the destination also removed the source and
+    nothing else (a server that keeps one group per user), the move counts as done and the
+    remove is not sent. When a write raises,
     memberships are read again to learn whether it took effect; if that read also fails the
     outcome is ``unknown``. ``reverse`` lists, as changes for a new plan, the operations
     that took effect or may have.
@@ -418,11 +420,17 @@ def apply_changes(
             # and the remove leaves them in both groups.
             record = {"username": row["username"], "op": ops[0], "group": row.get(ops[0])}
             return _stop(record, "stopped: time budget reached before this user")
+        removed_by_server = False
         for op in ops:
             gid = row["add_id"] if op == "add" else row["remove_id"]
             path = row["add"] if op == "add" else row["remove"]
             target = (expected | {gid}) if op == "add" else (expected - {gid})
             record: dict[str, Any] = {"username": row["username"], "op": op, "group": path}
+            if op == "remove" and removed_by_server:
+                record.update(before=sorted(expected), after=sorted(expected))
+                record["result"] = "done (the server removed it together with the add)"
+                operations.append(record)
+                continue
             left = _remaining(deadline)
             if left is not None and left < WRITE_RESERVE_SECONDS:
                 return _stop(record, "stopped: time budget reached before this operation")
@@ -472,6 +480,19 @@ def apply_changes(
                 record["result"] = "done"
                 if write_error:
                     record["result"] = f"done (error reported but the change took effect: {write_error})"
+                operations.append(record)
+                continue
+            if op == "add" and "remove" in ops and after == target - {row["remove_id"]}:
+                # Some deployments replace a user's group when another is added (one group
+                # per user): the source vanished with the add and nothing else changed. The
+                # move is complete; the remove is not sent.
+                done.append((row, "add"))
+                done.append((row, "remove"))
+                expected = after
+                removed_by_server = True
+                record["result"] = "done (the server also removed the source group)"
+                if write_error:
+                    record["result"] += f"; error reported: {write_error}"
                 operations.append(record)
                 continue
             if after == before:
