@@ -1052,7 +1052,6 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
     return "\n".join(lines)
 
 
-
 def _group_write_config():
     """The group-write policy, re-read from the environment on every call (fail closed)."""
     cfg = load_config()

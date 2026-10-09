@@ -336,8 +336,8 @@ def apply_changes(kc, cfg: GroupWriteConfig, changes: Any, expected_digest: str)
                 if not took:
                     done.pop()
             except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
-                wrote = "status" in record
-                record["result"] = f"error{' after the write (state unknown)' if wrote else ''}: {type(exc).__name__}: {exc}"
+                when = " after the write (state unknown)" if "status" in record else ""
+                record["result"] = f"error{when}: {type(exc).__name__}: {exc}"
                 operations.append(record)
                 return {
                     "applied": "partial" if done else "no",

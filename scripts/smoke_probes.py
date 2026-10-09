@@ -36,6 +36,8 @@ from typing import Any
 
 from smoke_harness import Caller, Probe, SkipProbe
 
+from keycloak_mcp.group_changes import load_config as load_group_write_config
+
 #: KeyCloak ships these clients in every realm, so naming them here reveals
 #: nothing about the deployment while still exercising the code path.
 BUILTIN_CLIENT = "account"
@@ -252,3 +254,11 @@ PROBES: dict[str, Probe] = {
     "logout_user": Probe(skip="destructive: would terminate a user's sessions"),
     "set_user_enabled": Probe(skip="destructive: would enable/disable an account"),
 }
+
+# The group-change tools exist only when KEYCLOAK_GROUP_WRITE_ROOT is set, so their
+# probes are added only then (otherwise they would be specs for unregistered tools).
+# Both are skipped: planning needs site-specific group paths and usernames, and the
+# apply tool changes state.
+if load_group_write_config() is not None:
+    PROBES["plan_group_changes"] = Probe(skip="needs site-specific group paths and usernames")
+    PROBES["apply_group_changes"] = Probe(skip="destructive: would change group memberships")

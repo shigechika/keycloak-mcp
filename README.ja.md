@@ -122,6 +122,9 @@ pip install -e .
 | `KEYCLOAK_MAX_EVENTS` | イベント系ツールの1ページングあたりのイベント取得上限（激遅化する深いオフセットの深さも制限）。上限超過時は部分結果を開示。`0`/負の値で無効。 | `200000` |
 | `KEYCLOAK_MAX_USERS` | `get_totp_users` の `max_users` 引数が `0` のときの走査ユーザー数の既定上限（1ユーザーにつき credential 呼び出し1回）。`0`/負の値で無効（全レルム、`KEYCLOAK_DEADLINE` のみで制限）。 | `5000` |
 | `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | `get_user` が出力してよいカスタム属性キーのカンマ区切りリスト。未設定時、`get_user` はユーザー名・氏名・メール・有効フラグ・作成日時のみを返す（ユーザー名解決に使う検索エンドポイントは brief representation を返し、`attributes` を一切含まないため）。キーをホワイトリストに入れると、`get_user` はその場でID指定の追加取得を1回行い、該当キーが存在すれば値を追記する。それ以外の属性は出力されない。安全弁として、`password`・`secret`・`token` などクレデンシャルらしき語を含むキー名はホワイトリストに入れても値を表示せずブロックされる（ただしこのパターンに当てはまらない名前のクレデンシャル属性までは防げない） | *未設定* |
+| `KEYCLOAK_GROUP_WRITE_ROOT` | 任意で有効にするグループ変更ツール（`plan_group_changes`・`apply_group_changes`）を登録し、対象をこの絶対パス（例: `/Staff`）より下のグループに限る。未設定・空・不正な値のときは 2 つのツールを登録しない。承認の手順を前段に置く配備でだけ設定する | *未設定* |
+| `KEYCLOAK_PROTECTED_GROUPS` | グループ変更ツールが追加・削除を拒否するグループの完全パス（`;` 区切り、配下も含む）。不正な項目があると保護を黙って落とさず、グループ変更ツールごと無効にする | *未設定* |
+| `KEYCLOAK_GROUP_BATCH_MAX` | グループ変更 1 回あたりの最大行数 | `30` |
 
 ### KeyCloak 側のクライアント設定
 
@@ -144,6 +147,23 @@ pip install -e .
 読み取り専用**になり、上記 4 つだけが `403` で失敗して残りのツールはそのまま動きます。
 realm を変更する権限を一切与えずに調査だけ任せられる，ということです。アカウント復旧や
 封じ込めまで行う場合にのみ `manage-users` を付けてください。
+
+### グループ変更（任意で有効化）
+
+`plan_group_changes` と `apply_group_changes` は、ユーザーをグループ間で移動する（人事異動など）。
+`KEYCLOAK_GROUP_WRITE_ROOT` を設定したときだけ存在するので、承認の手順を持たない配備で同じバイナリを使っても出てこない。
+
+| ツール | Admin API |
+|---|---|
+| `plan_group_changes` | 読み取りのみ: `GET /group-by-path/...`、`GET /groups/{id}/role-mappings`、`GET /users/{id}/groups` |
+| `apply_group_changes` | `PUT /users/{id}/groups/{groupId}` のあと `DELETE /users/{id}/groups/{groupId}` |
+
+- `plan_group_changes` はユーザーとグループを名前・パスの完全一致で解決し、行ごとに現在の直接所属、実行される操作、判定を返す。`digest` は解決した ID、各ユーザーの現在の所属、ポリシーを含む。
+- `apply_group_changes` は計画をやり直し、全行がまだ実行可能で digest が承認時と一致するときだけ変更する。計画のあとに誰かが所属を変えていれば一括で中止する。追加してから削除し、書き込みの前に所属を読み直し、書き込みの後に読み戻し、最初の不一致やエラーで止まる。
+- 拒否する対象: root の外、root 自身、保護グループとその配下、realm・client のロールマッピングを直接または祖先経由で持つグループ。
+- 結果の `reverse` は、実際に起きた変更を戻すための変更案。新しい計画と承認のための提案で、自動では実行しない。所属を戻しても、誤った所属の間に起きたアクセスは取り消せない。
+
+書き込みには `manage-users` が要る。KeyCloak のバージョンによっては、グループとそのロールマッピングの参照に `query-groups` も要る。`plan_group_changes` を一度実行して確かめる。
 
 ### 設定の確認
 

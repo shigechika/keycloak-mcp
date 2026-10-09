@@ -59,6 +59,7 @@ STATE_CHANGING = {
     "reset_passwords_batch",
     "logout_user",
     "set_user_enabled",
+    "apply_group_changes",
 }
 
 
