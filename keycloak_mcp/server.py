@@ -22,6 +22,7 @@ from mcp.shared.exceptions import MCPError
 
 from . import __version__ as _version
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
+from .group_changes import apply_changes, load_config, plan_changes
 from .sites import SiteClassifier
 
 
@@ -1040,7 +1041,7 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
     if not matched:
         return f"No group matching '{group_name}'"
     group = matched[0]
-    members = _kc().get_group_members(group["id"], max_results)
+    members = _kc().get_group_members(group["id"], max_results=max_results)
     if not members:
         return f"No members in group '{group['name']}'"
     lines = [f"Members of '{group['name']}' ({len(members)}):"]
@@ -1050,6 +1051,73 @@ def list_users_by_group(group_name: str, max_results: int = 100) -> str:
         )
     return "\n".join(lines)
 
+
+
+def _group_write_config():
+    """The group-write policy, re-read from the environment on every call (fail closed)."""
+    cfg = load_config()
+    if cfg is None:
+        raise ToolError("group changes are not enabled on this server (KEYCLOAK_GROUP_WRITE_ROOT is unset or invalid)")
+    return cfg
+
+
+def plan_group_changes(changes: list[dict]) -> dict:
+    """Check a batch of group moves without changing anything (e.g. staff transfers).
+
+    Read-only. Use this first, show the result to a human, and pass its ``digest`` to
+    apply_group_changes only after they approve it.
+
+    Args:
+        changes: List of objects ``{"username": "<exact username>", "remove": "<full group
+            path or null>", "add": "<full group path or null>"}``. Paths are exact and
+            absolute (e.g. ``/Staff/Faculty/Office/Section``); partial names are not matched.
+
+    Returns a dict with ``ok`` (True only when every row is ``ok`` or ``no-op``), ``digest``
+    (covers the resolved IDs, each user's current direct groups and the server's policy;
+    null when not ok), ``rows`` (per user: current groups, operations that would run in
+    order, and ``status``: ``ok``, ``no-op`` or the reason it cannot run) and ``errors``.
+    Groups outside the server's writable root, protected groups, and groups that carry
+    realm/client roles (directly or via an ancestor) are refused.
+    """
+    return plan_changes(_kc(), _group_write_config(), changes)
+
+
+def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
+    """Apply a batch of group moves that a human approved from plan_group_changes.
+
+    Writes. Re-plans first and changes nothing unless every row is still executable and
+    the fresh digest equals ``expected_digest`` (any membership change since the plan, by
+    anyone, aborts the whole batch). Then, per user, adds the new group before removing
+    the old one, re-reading memberships before each write and reading back after it; the
+    first mismatch or error stops the run.
+
+    Args:
+        changes: The same list that was passed to plan_group_changes.
+        expected_digest: The ``digest`` from the approved plan_group_changes result.
+
+    Returns ``applied`` (``yes``, ``no`` or ``partial``), ``reason``, the fresh ``plan``,
+    per-operation ``operations`` (before/after memberships and HTTP status) and
+    ``reverse``: changes that would undo what took effect. ``reverse`` is a proposal for a
+    new plan/approval, never applied automatically; restoring memberships does not undo
+    access that happened while they were wrong.
+    """
+    return apply_changes(_kc(), _group_write_config(), changes, expected_digest)
+
+
+def register_group_tools(server) -> bool:
+    """Register the group-change tools on ``server`` when group writes are enabled.
+
+    Opt-in by environment (``KEYCLOAK_GROUP_WRITE_ROOT``), so deployments that share this
+    binary without an approval step in front of it never expose a membership write.
+    """
+    if load_config() is None:
+        return False
+    server.tool()(plan_group_changes)
+    server.tool()(apply_group_changes)
+    return True
+
+
+register_group_tools(mcp)
 
 # ---- Event tools ----
 

@@ -2,6 +2,7 @@
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -292,6 +293,25 @@ class KeyCloakClient:
         """Get groups a user belongs to."""
         return self._get(f"/users/{user_id}/groups")
 
+    def get_user_groups_all(self, user_id: str, page_size: int = 100) -> list[dict]:
+        """Get every group a user directly belongs to, paging until a short page.
+
+        Group-change tools compare full membership sets, so a single page that
+        silently stops at the server default would hide memberships.
+        """
+        return self._paginate(f"/users/{user_id}/groups", {"briefRepresentation": "true"}, page_size)[0]
+
+    def add_user_to_group(self, user_id: str, group_id: str) -> int:
+        """Add a user to a group (``PUT /users/{id}/groups/{groupId}``). Returns the status code.
+
+        Both IDs must already be resolved from the Admin API; callers never pass raw input here.
+        """
+        return self._put(f"/users/{user_id}/groups/{group_id}")
+
+    def remove_user_from_group(self, user_id: str, group_id: str) -> int:
+        """Remove a user from a group (``DELETE /users/{id}/groups/{groupId}``). Returns the status code."""
+        return self._delete(f"/users/{user_id}/groups/{group_id}")
+
     # --- Brute Force ---
 
     def get_brute_force_status(self, user_id: str) -> dict:
@@ -304,14 +324,26 @@ class KeyCloakClient:
         """List all groups."""
         return self._get("/groups", {"max": max_results})
 
-    def get_group_by_path(self, path: str) -> dict:
-        """Get a group by its path (e.g. ``"/教職員"``).
+    def get_group_by_path(self, path: str) -> dict | None:
+        """Get a group by its path (e.g. ``"/教職員"``), or ``None`` when no such group exists.
 
         A leading slash is accepted and stripped before building the URL, so
-        both ``"/教職員"`` and ``"教職員"`` resolve the same group. Returns the
-        group dict (``id``, ``name``, ``path``, possibly ``subGroups``).
+        both ``"/教職員"`` and ``"教職員"`` resolve the same group. Each segment is
+        percent-encoded (``/`` kept as the separator) so input such as ``?``,
+        ``#`` or ``%`` cannot change the request. Only a 404 maps to ``None``;
+        401/403 and server errors propagate. Returns the group dict (``id``,
+        ``name``, ``path``, possibly ``subGroups``).
         """
-        return self._get(f"/group-by-path/{path.lstrip('/')}")
+        try:
+            return self._get(f"/group-by-path/{quote(path.lstrip('/'), safe='/')}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+    def get_group_role_mappings(self, group_id: str) -> dict:
+        """Role mappings assigned directly to a group (``realmMappings`` / ``clientMappings``)."""
+        return self._get(f"/groups/{group_id}/role-mappings")
 
     def get_group_children(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
         """Get the direct child (sub-)groups of a group (single page)."""
