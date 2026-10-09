@@ -1127,7 +1127,9 @@ def apply_group_changes(changes: list[dict], expected_digest: str) -> dict:
     effect because it could not be read back; check the user before retrying). Also
     ``reason``, the fresh ``plan``, per-operation ``operations`` (before/after memberships
     and HTTP status) and ``reverse``: changes that would undo what took effect or may have.
-    ``reverse`` is a proposal for a new plan/approval, never applied automatically;
+    ``manual_restore`` lists users whose previous groups a plan cannot bring back (one group
+    per user, and they had none or several) with those groups. ``reverse`` is a proposal for a
+    new plan/approval, never applied automatically;
     restoring memberships does not undo access that happened while they were wrong.
     """
     return apply_changes(

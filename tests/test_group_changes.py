@@ -478,3 +478,19 @@ class TestSingleMode:
         d = plan_changes(kc, single, [_swap()[0]])["digest"]
         r = apply_changes(kc, single, [_swap()[0]], d)
         assert r["applied"] == "partial" and "memberships changed" in r["reason"]
+
+    def test_completed_move_with_explicit_remove_is_no_op(self, kc, single):
+        kc.members["u-alice"] = {kc.groups["/Staff/HQ/General"]["id"]}
+        p = plan_changes(kc, single, [_swap()[0]])
+        assert p["ok"] and p["rows"][0]["status"] == "no-op"
+
+    def test_move_from_several_groups_needs_manual_restore(self, kc, single):
+        kc.replace_on_add = True
+        kc.members["u-alice"].add(kc.groups["/Staff/Med/Office"]["id"])
+        changes = [{"username": "alice", "add": "/Staff/HQ/General"}]
+        d = plan_changes(kc, single, changes)["digest"]
+        r = apply_changes(kc, single, changes, d)
+        assert r["applied"] == "yes" and r["reverse"] == []
+        assert r["manual_restore"] == [
+            {"username": "alice", "previous_groups": ["/Staff/HQ/Safety", "/Staff/Med/Office"]}
+        ]

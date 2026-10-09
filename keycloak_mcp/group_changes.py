@@ -282,6 +282,13 @@ def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
         row["status"] = "this server keeps one group per user; a row must name the group to add"
         return
     cur = set(row["current_ids"])
+    if cur == {row["add_id"]}:
+        # Already moved (or already there): nothing to do, whatever ``remove`` says.
+        row["replaced"] = []
+        row["ops"] = []
+        row["status"] = NO_OP
+        row["after_ids"] = [row["add_id"]]
+        return
     if row["add_id"] in cur and len(cur) > 1:
         # The server does nothing when the user is already a direct member, so the extra
         # memberships would stay. Fix such users by hand.
@@ -301,8 +308,8 @@ def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
         row["remove"] = left[0]
         row["remove_id"] = next(i for i, p in by_id.items() if p == left[0])
     row["replaced"] = left
-    row["ops"] = [] if cur == {row["add_id"]} else ["add"]
-    row["status"] = OK if row["ops"] else NO_OP
+    row["ops"] = ["add"]
+    row["status"] = OK
     row["after_ids"] = [row["add_id"]]
 
 
@@ -420,7 +427,9 @@ def apply_changes(
     read-back is the destination alone, and no DELETE is sent. When a write raises,
     memberships are read again to learn whether it took effect; if that read also fails the
     outcome is ``unknown``. ``reverse`` lists, as changes for a new plan, the operations
-    that took effect or may have.
+    that took effect or may have. In ``single`` mode a user who had zero or several groups
+    before the move cannot be restored by a plan; such users are listed in
+    ``manual_restore`` with their previous groups instead.
     """
     plan = plan_changes(kc, cfg, changes, deadline=deadline)
     if not plan["ok"]:
@@ -440,15 +449,20 @@ def apply_changes(
     done: list[tuple[dict, str]] = []  # (row, op) that took effect or may have, in order
     uncertain = False
 
+    manual: list[dict] = []  # single mode: users a plan cannot restore (they had 0 or 2+ groups)
+
     def _reverse() -> list[dict]:
         rev: dict[str, dict] = {}
+        manual.clear()
         for row, op in reversed(done):
+            if cfg.mode == "single" and op == "add" and len(row.get("replaced") or []) != 1:
+                manual.append({"username": row["username"], "previous_groups": row.get("replaced") or []})
+                continue
             item = rev.setdefault(row["username"], {"username": row["username"], "remove": None, "add": None})
             if op == "add":
                 item["remove"] = row["add"]
                 if cfg.mode == "single":
-                    replaced = row.get("replaced") or []
-                    item["add"] = replaced[0] if len(replaced) == 1 else None
+                    item["add"] = row["replaced"][0]
             else:
                 item["add"] = row["remove"]
         return list(rev.values())
@@ -460,7 +474,15 @@ def apply_changes(
             applied = "unknown"
         else:
             applied = "partial" if done else "no"
-        return {"applied": applied, "reason": result, "plan": plan, "operations": operations, "reverse": _reverse()}
+        reverse = _reverse()
+        return {
+            "applied": applied,
+            "reason": result,
+            "plan": plan,
+            "operations": operations,
+            "reverse": reverse,
+            "manual_restore": list(manual),
+        }
 
     for row in plan["rows"]:
         expected = set(row.get("current_ids", []))
@@ -539,4 +561,12 @@ def apply_changes(
                 done.append((row, op))
             return _stop(record, "stopped: memberships changed during this operation")
 
-    return {"applied": "yes", "reason": "", "plan": plan, "operations": operations, "reverse": _reverse()}
+    reverse = _reverse()
+    return {
+        "applied": "yes",
+        "reason": "",
+        "plan": plan,
+        "operations": operations,
+        "reverse": reverse,
+        "manual_restore": list(manual),
+    }
