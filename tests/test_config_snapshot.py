@@ -186,11 +186,31 @@ class TestCollect:
         kc.realm["smtpServer"]["password"] = "false"
         assert cs.collect(kc)["sections"]["realm"]["smtpServer"]["password"] == cs.REDACTED
 
+    def test_secrets_named_with_other_words_are_redacted(self, kc):
+        kc.clients[0]["attributes"].update(
+            {
+                "client.secret.rotated": "old-secret-value",
+                "client.secret.expiration": "1800000000",
+                "apiKey": "api-key-value",
+                "awsSecretKey": "aws-secret-value",
+                "access.token.claim": "true",
+            }
+        )
+        attrs = cs.collect(kc)["sections"]["clients"]["app"]["attributes"]
+        for k in ("client.secret.rotated", "apiKey", "awsSecretKey"):
+            assert attrs[k] == cs.REDACTED, k
+        assert attrs["client.secret.expiration"] == "1800000000"
+        assert attrs["access.token.claim"] == "true"
+
     def test_settings_named_like_secrets_stay_visible(self, kc):
         realm = cs.collect(kc)["sections"]["realm"]
         assert realm["passwordPolicy"] == "length(12)"
         assert realm["revokeRefreshToken"] is False
         assert realm["requiredCredentials"] == ["password"]
+        kc.realm.update({"resetCredentialsFlow": "reset credentials", "webAuthnPolicyPasswordlessRpEntityName": "x"})
+        realm = cs.collect(kc)["sections"]["realm"]
+        assert realm["resetCredentialsFlow"] == "reset credentials"
+        assert realm["webAuthnPolicyPasswordlessRpEntityName"] == "x"
         attrs = cs.collect(kc)["sections"]["clients"]["app"]["attributes"]
         assert attrs["client_credentials.use_refresh_token"] == "false"
 
@@ -210,7 +230,8 @@ class TestCollect:
         assert snap["roles"]["dept-admin"]["composites"] == ["realm-management:query-users"]
         assert "composites" not in snap["roles"]["plain"]
         assert set(snap["flows"]) == {"browser", "browser otp"}  # sub-flows come with their parent
-        assert snap["flows"]["browser otp"]["executions"]["00 OTP Form"]["requirement"] == "REQUIRED"
+        assert snap["flows"]["browser otp"]["steps"]["OTP Form"]["requirement"] == "REQUIRED"
+        assert snap["flows"]["browser otp"]["order"] == ["OTP Form", "Condition - user role"]
         # The same component name under two subTypes stays two entries.
         assert {
             "ClientRegistrationPolicy/anonymous/Allowed Client Scopes",
@@ -228,6 +249,41 @@ class TestCollect:
         snap = cs.collect(kc)
         assert "identity_providers" not in snap["sections"]
         assert snap["unavailable"] == ["identity_providers"]
+
+    def test_a_section_that_went_away_is_left_out_not_fatal(self, kc):
+        orig = kc._get
+
+        def gone(path, params=None, deadline=None):
+            if path == "/events/config":
+                raise httpx.HTTPStatusError("x", request=httpx.Request("GET", "x"), response=httpx.Response(404))
+            return orig(path, params, deadline)
+
+        kc._get = gone
+        snap = cs.collect(kc)
+        assert "events" not in snap["sections"] and "events" in snap["unavailable"]
+
+    def test_a_step_pointing_at_a_deleted_config(self, kc):
+        del kc.auth_configs["cfg-1"]
+        orig = kc._get
+
+        def missing(path, params=None, deadline=None):
+            if path.startswith("/authentication/config/"):
+                raise httpx.HTTPStatusError("x", request=httpx.Request("GET", "x"), response=httpx.Response(404))
+            return orig(path, params, deadline)
+
+        kc._get = missing
+        steps = cs.collect(kc)["sections"]["flows"]["browser otp"]["steps"]
+        assert steps["Condition - user role"]["authenticationConfig"] == "<missing>"
+
+    def test_components_with_the_same_name_under_different_parents(self, kc):
+        kc.components += [
+            {"id": "ldap-a", "name": "ldap-a", "providerType": "org.keycloak.storage.UserStorageProvider"},
+            {"id": "ldap-b", "name": "ldap-b", "providerType": "org.keycloak.storage.UserStorageProvider"},
+            {"id": "m-a", "parentId": "ldap-a", "name": "email", "providerType": "org.keycloak.storage.ldap.mappers.X"},
+            {"id": "m-b", "parentId": "ldap-b", "name": "email", "providerType": "org.keycloak.storage.ldap.mappers.X"},
+        ]
+        comps = cs.collect(kc)["sections"]["components"]
+        assert {"X/ldap-a/email", "X/ldap-b/email"} <= set(comps)
 
     def test_other_identity_provider_errors_propagate(self, kc):
         kc.idp_status = 500
@@ -271,9 +327,28 @@ class TestDiff:
         assert [(r["section"], r["key"]) for r in rows] == [("flows", "browser otp")]
         text = "\n".join(cs.format_diff(rows))
         assert (
-            "flows/browser otp.executions.01 Condition - user role.authenticationConfig.config.condUserRole: "
+            "flows/browser otp.steps.Condition - user role.authenticationConfig.config.condUserRole: "
             "staff -> realm-admin"
         ) in text
+
+    def test_inserting_a_step_shows_only_that_step(self, kc):
+        a = cs.collect(kc)
+        kc.executions["browser otp"].insert(
+            0, {"id": "e9", "level": 0, "index": 0, "displayName": "Cookie", "requirement": "ALTERNATIVE"}
+        )
+        lines = cs.format_diff(cs.diff(a, cs.collect(kc)))
+        assert lines[0] == '- flows/browser otp.order: added ["Cookie"]'
+        assert lines[1:] == [
+            "- flows/browser otp.steps.Cookie.level: (absent) -> 0",
+            "- flows/browser otp.steps.Cookie.requirement: (absent) -> ALTERNATIVE",
+        ]
+
+    def test_an_addition_to_a_long_list_is_visible(self, kc):
+        kc.clients[0]["redirectUris"] = [f"https://host{i:02d}.example.org/callback/*" for i in range(20)]
+        a = cs.collect(kc)
+        kc.clients[0]["redirectUris"].append("https://zz.attacker.example/*")
+        lines = cs.format_diff(cs.diff(a, cs.collect(kc)))
+        assert lines == ['- clients/app.redirectUris: added ["https://zz.attacker.example/*"]']
 
     def test_removed_entry(self, kc):
         a = cs.collect(kc)
@@ -404,7 +479,7 @@ class TestDailyBriefConfig:
     def test_config_admin_events_are_a_warning(self, mock, kc, monkeypatch):
         monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
         evt = {
-            "time": 1700000000000,
+            "time": int(time.time() * 1000) - 60_000,
             "operationType": "CREATE",
             "resourceType": "REALM_ROLE_MAPPING",
             "resourcePath": "users/u1/role-mappings/realm",
@@ -436,7 +511,26 @@ class TestDailyBriefConfig:
         m.get_events_all.side_effect = lambda *a, **kw: (order.append(("events", kw["deadline"])), ([], False))[1]
         server.daily_brief()
         assert order[0][0] == "admin" and "REALM" in m.get_admin_events_all.call_args_list[0].kwargs["resource_types"]
-        assert len({d for _, d in order}) == 1
+        config_deadline = order[0][1]
+        event_deadlines = {d for kind, d in order[1:]}
+        # The events share one deadline; the configuration part stops earlier, within it.
+        assert len(event_deadlines) == 1
+        assert config_deadline <= min(event_deadlines)
+        assert config_deadline <= time.monotonic() + server._CONFIG_BUDGET_SECONDS
+
+    @patch.object(server, "_kc")
+    def test_config_events_before_the_window_are_not_repeated(self, mock, kc, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
+        old = {
+            "time": int(time.time() * 1000) - 20 * 3600 * 1000,  # yesterday, before the 18 h window
+            "operationType": "UPDATE",
+            "resourceType": "REALM",
+            "resourcePath": "",
+            "authDetails": {"userId": "admin-1", "ipAddress": "10.0.0.1"},
+        }
+        _brief_mocks(mock, kc, config_events=[old])
+        out = server.daily_brief(since_hours=18)
+        assert "Configuration admin events: 0" in out and "[CONFIG]" not in out
 
     @patch.object(server, "_kc")
     def test_partial_read_keeps_the_previous_baseline(self, mock, kc, tmp_path, monkeypatch):

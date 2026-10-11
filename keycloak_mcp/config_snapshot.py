@@ -35,12 +35,15 @@ from typing import Any
 from urllib.parse import quote
 
 from .client import DeadlineExceeded, past_deadline
+from .redaction import looks_like_credential_key, normalized
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
 SNAPSHOT_DIR = "config-snapshots"
 #: Snapshot files kept; older ones are removed when a new one is written.
 KEEP_SNAPSHOTS = 30
 REDACTED = "<redacted>"
+#: Shown for a field that exists on one side of a comparison only.
+ABSENT = "(absent)"
 #: Strings longer than this are stored as a hash (certificates, keys, long policies).
 LONG_VALUE = 200
 
@@ -74,19 +77,11 @@ CONFIG_EVENT_TYPES = (
     "CLIENT_INITIAL_ACCESS_MODEL",
 )
 
-#: Key suffixes whose values are secrets, compared after lower-casing and removing ``.``,
-#: ``_`` and ``-`` (so ``saml.signing.private.key`` and ``private_key`` both match
-#: ``privatekey``). A suffix, not a substring, so that ``passwordPolicy`` or
-#: ``accessTokenLifespan`` stay visible.
-_SECRET_SUFFIXES = (
-    "secret",
-    "password",
-    "passwd",
-    "privatekey",
-    "credential",
-    "token",
-    "keystore",
-)
+#: KeyCloak settings whose names contain a credential marker but which hold no secret.
+_NOT_SECRET = {"passwordPolicy", "requiredCredentials", "resetCredentialsFlow", "cibaBackchannelTokenDeliveryMode"}
+_NOT_SECRET_PREFIXES = ("webAuthnPolicyPasswordless",)
+#: Fields that are secrets whatever they hold, even ``"false"`` (normalized suffixes).
+_ALWAYS_SECRET_SUFFIXES = ("password", "passwd", "secret", "credential", "privatekey", "apikey", "keystore")
 #: Keys left out everywhere: internal IDs and values that change by themselves.
 _DROP_KEYS = {"id", "containerId", "parentId", "flowId", "parentFlow", "notBefore"}
 #: Realm representation keys covered by their own section, or too large to compare usefully.
@@ -142,31 +137,26 @@ class SnapshotIncomplete(Exception):
     """A snapshot could not be read in full (time budget, size cap); it is not stored."""
 
 
-def _normalized(key: str) -> str:
-    return key.lower().replace(".", "").replace("_", "").replace("-", "")
-
-
-def _is_secret_key(key: str) -> bool:
-    return _normalized(key).endswith(_SECRET_SUFFIXES)
-
-
 def _is_volatile_key(key: str) -> bool:
     return key in _DROP_KEYS or key.endswith(".creation.time")
 
 
 def _holds_secret(key: str, value: Any) -> bool:
-    """A secret-named key with a string value.
+    """A credential-named key (see :mod:`.redaction`) holding a non-empty string.
 
-    Booleans and numbers are settings (``revokeRefreshToken: true``). A ``"true"`` /
-    ``"false"`` string is a setting only under a ``...token`` key (client attributes such
-    as ``client_credentials.use_refresh_token``); a password, secret or credential field
-    is redacted whatever it holds.
+    Booleans and numbers are settings (``revokeRefreshToken: true``), and so are
+    ``"true"``/``"false"`` and numeric strings (``access.token.claim``,
+    ``client.secret.expiration``) except under a field that is a secret whatever it holds
+    (``...password``, ``...secret``, ``...credential``, ``...privateKey``, ...).
     """
-    if not _is_secret_key(key):
+    if key in _NOT_SECRET or key.startswith(_NOT_SECRET_PREFIXES) or not looks_like_credential_key(key):
         return False
-    flags = ("true", "false") if _normalized(key).endswith("token") else ()
-    values = value if isinstance(value, list) else [value]
-    return any(isinstance(v, str) and v != "" and v not in flags for v in values)
+    strings = [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str) and v != ""]
+    if not strings:
+        return False
+    if normalized(key).endswith(_ALWAYS_SECRET_SUFFIXES):
+        return True
+    return any(v not in ("true", "false") and not v.lstrip("-").isdigit() for v in strings)
 
 
 def _scrub(value: Any) -> Any:
@@ -225,66 +215,72 @@ def _status(exc: Exception) -> int | None:
     return getattr(resp, "status_code", None)
 
 
-def collect(kc, deadline: float | None = None) -> dict[str, Any]:
-    """Read the realm configuration into a snapshot.
+def _step_keys(execs: list[dict]) -> list[str]:
+    """One key per step: its name, with ``#2``... when a name repeats in the flow."""
+    seen: dict[str, int] = {}
+    keys = []
+    for e in execs:
+        name = e.get("displayName") or e.get("providerId") or "?"
+        seen[name] = seen.get(name, 0) + 1
+        keys.append(name if seen[name] == 1 else f"{name} #{seen[name]}")
+    return keys
 
-    Returns ``{"version", "realm", "sections", "unavailable"}``. ``unavailable`` lists the
-    sections the service account may not read (HTTP 403); they are left out of the
-    snapshot and of every comparison. Raises :class:`SnapshotIncomplete` when the time
-    budget runs out; any other error propagates.
-    """
-    realm = _get(kc, "", deadline)
-    sections: dict[str, Any] = {}
-    unavailable: list[str] = []
 
-    sections["realm"] = _scrub({k: v for k, v in realm.items() if k not in _REALM_SKIP})
-    sections["events"] = _scrub(_get(kc, "/events/config", deadline))
+def _step(e: dict, auth_config) -> dict[str, Any]:
+    """One execution: what it runs, how it is required, and its settings (empty fields left out)."""
+    fields = {
+        "level": e.get("level"),
+        "providerId": e.get("providerId"),
+        "requirement": e.get("requirement"),
+        "authenticationFlow": e.get("authenticationFlow"),
+        "alias": e.get("alias"),
+        "authenticationConfig": auth_config(e.get("authenticationConfig")),
+    }
+    return _scrub({k: v for k, v in fields.items() if v is not None})
 
-    clients = _get_all(kc, "/clients", deadline)
-    client_names = {c["id"]: c.get("clientId", c["id"]) for c in clients}
 
+def _flows(kc, deadline: float | None, flow_alias: dict[str, str]) -> dict[str, Any]:
     flows = _get(kc, "/authentication/flows", deadline)
-    flow_alias = {f["id"]: f.get("alias", f["id"]) for f in flows}
-    flow_section: dict[str, Any] = {}
-    auth_configs: dict[str, Any] = {}
+    flow_alias.update({f["id"]: f.get("alias", f["id"]) for f in flows})
+    configs: dict[str, Any] = {}
 
     def auth_config(config_id: str | None) -> Any:
         # The settings of one step (for example the role a conditional step checks).
         if not config_id:
             return None
-        if config_id not in auth_configs:
-            c = _get(kc, f"/authentication/config/{quote(config_id, safe='')}", deadline)
-            auth_configs[config_id] = _scrub({"alias": c.get("alias"), "config": c.get("config") or {}})
-        return auth_configs[config_id]
+        if config_id not in configs:
+            try:
+                c = _get(kc, f"/authentication/config/{quote(config_id, safe='')}", deadline)
+                configs[config_id] = _scrub({"alias": c.get("alias"), "config": c.get("config") or {}})
+            except SnapshotIncomplete:
+                raise
+            except Exception as exc:
+                if _status(exc) != 404:
+                    raise
+                configs[config_id] = "<missing>"  # a step pointing at a deleted config
+        return configs[config_id]
 
+    out: dict[str, Any] = {}
     for f in flows:
         if not f.get("topLevel", True):
             continue
         execs = _get(kc, f"/authentication/flows/{quote(f['alias'], safe='')}/executions", deadline)
-        flow_section[f["alias"]] = {
+        keys = _step_keys(execs)
+        out[f["alias"]] = {
             "description": f.get("description"),
             "providerId": f.get("providerId"),
             "builtIn": f.get("builtIn"),
-            # Keyed by position and name, so a changed step shows its own fields.
-            "executions": {
-                f"{i:02d} {e.get('displayName') or e.get('providerId') or ''}": _scrub(
-                    {
-                        "level": e.get("level"),
-                        "providerId": e.get("providerId"),
-                        "requirement": e.get("requirement"),
-                        "authenticationFlow": e.get("authenticationFlow"),
-                        "alias": e.get("alias"),
-                        "authenticationConfig": auth_config(e.get("authenticationConfig")),
-                    }
-                )
-                for i, e in enumerate(execs)
-            },
+            # Steps are keyed by name so that inserting one does not shift the others; the
+            # order is a list of its own (not sorted: the order is the flow).
+            "order": keys,
+            "steps": {k: _step(e, auth_config) for k, e in zip(keys, execs, strict=True)},
         }
-    sections["flows"] = flow_section
+    return out
 
-    roles = _get_all(kc, "/roles", deadline, {"briefRepresentation": "false"})
-    role_section: dict[str, Any] = {}
-    for r in roles:
+
+def _roles(kc, deadline: float | None, client_names: dict[str, str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for r in _get_all(kc, "/roles", deadline, {"briefRepresentation": "false"}):
         entry = {"description": r.get("description"), "attributes": r.get("attributes") or {}}
         if r.get("composite"):
             composites = _get(kc, f"/roles-by-id/{r['id']}/composites", deadline)
@@ -294,48 +290,104 @@ def collect(kc, deadline: float | None = None) -> dict[str, Any]:
                 else c.get("name", "")
                 for c in composites
             )
-        role_section[r["name"]] = _scrub(entry)
-    sections["roles"] = role_section
+        out[r["name"]] = _scrub(entry)
+    return out
 
-    sections["required_actions"] = _by_name(_get(kc, "/authentication/required-actions", deadline), "alias")
 
-    client_section: dict[str, Any] = {}
+def _clients(clients: list[dict], flow_alias: dict[str, str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     for c in clients:
         rep = {k: c[k] for k in _CLIENT_FIELDS if k in c}
         overrides = rep.get("authenticationFlowBindingOverrides") or {}
         rep["authenticationFlowBindingOverrides"] = {k: flow_alias.get(v, v) for k, v in overrides.items()}
         rep["protocolMappers"] = _by_name(rep.get("protocolMappers") or [])
-        client_section[c.get("clientId", c["id"])] = _scrub(rep)
-    sections["clients"] = client_section
+        out[c.get("clientId", c["id"])] = _scrub(rep)
+    return out
 
-    scopes = _get(kc, "/client-scopes", deadline)
-    sections["client_scopes"] = {
-        s["name"]: _scrub({**s, "protocolMappers": _by_name(s.get("protocolMappers") or [])})
-        for s in scopes
-        if s.get("name")
-    }
-    sections["default_client_scopes"] = {
-        "default": sorted(s.get("name", "") for s in _get(kc, "/default-default-client-scopes", deadline)),
-        "optional": sorted(s.get("name", "") for s in _get(kc, "/default-optional-client-scopes", deadline)),
-    }
-    # The same name can exist once per subType (client registration policies for anonymous
-    # and authenticated requests), so the key carries it.
-    sections["components"] = {
-        "/".join(
-            x for x in (c.get("providerType", "").rsplit(".", 1)[-1], c.get("subType"), c.get("name") or "") if x
-        ): _scrub(c)
-        for c in _get(kc, "/components", deadline)
-    }
 
-    try:
-        idps = _get(kc, "/identity-provider/instances", deadline)
-        sections["identity_providers"] = _by_name(idps, "alias")
-    except SnapshotIncomplete:
-        raise
-    except Exception as exc:
-        if _status(exc) != 403:
+def _components(components: list[dict]) -> dict[str, Any]:
+    """Components keyed by type, subType, parent component and name.
+
+    The same name exists once per subType (client registration policies for anonymous
+    and authenticated requests) and once per parent (the mappers of two user-federation
+    providers). Whatever still repeats gets ``#2``..., in ID order so the keys are stable.
+    """
+    names = {c.get("id"): c.get("name") for c in components}
+    out: dict[str, Any] = {}
+    for c in sorted(components, key=lambda c: str(c.get("id", ""))):
+        parts = (
+            c.get("providerType", "").rsplit(".", 1)[-1],
+            c.get("subType"),
+            names.get(c.get("parentId")),
+            c.get("name") or "",
+        )
+        key = base = "/".join(x for x in parts if x)
+        n = 1
+        while key in out:
+            n += 1
+            key = f"{base} #{n}"
+        out[key] = _scrub(c)
+    return out
+
+
+def collect(kc, deadline: float | None = None) -> dict[str, Any]:
+    """Read the realm configuration into a snapshot.
+
+    Returns ``{"version", "realm", "sections", "unavailable"}``. ``unavailable`` lists the
+    sections that could not be read (HTTP 403 or 404); they are left out of the snapshot
+    and of every comparison. Raises :class:`SnapshotIncomplete` when the time budget runs
+    out; any other error propagates.
+    """
+    realm = _get(kc, "", deadline)
+    sections: dict[str, Any] = {}
+    unavailable: list[str] = []
+
+    def section(name: str, read):
+        # A section the service account may not read (403) or that went away (404) is
+        # left out and named, instead of failing every snapshot from then on.
+        try:
+            sections[name] = read()
+        except SnapshotIncomplete:
             raise
-        unavailable.append("identity_providers")
+        except Exception as exc:
+            if _status(exc) not in (403, 404):
+                raise
+            unavailable.append(name)
+
+    sections["realm"] = _scrub({k: v for k, v in realm.items() if k not in _REALM_SKIP})
+    section("events", lambda: _scrub(_get(kc, "/events/config", deadline)))
+
+    flow_alias: dict[str, str] = {}
+    section("flows", lambda: _flows(kc, deadline, flow_alias))
+    clients: list[dict] = []
+
+    def read_clients() -> dict[str, Any]:
+        # Flow overrides are stored by alias, so the clients come after the flows.
+        clients.extend(_get_all(kc, "/clients", deadline))
+        return _clients(clients, flow_alias)
+
+    section("clients", read_clients)
+    client_names = {c["id"]: c.get("clientId", c["id"]) for c in clients}
+
+    section("roles", lambda: _roles(kc, deadline, client_names))
+    section("required_actions", lambda: _by_name(_get(kc, "/authentication/required-actions", deadline), "alias"))
+    section(
+        "client_scopes",
+        lambda: {
+            s["name"]: _scrub({**s, "protocolMappers": _by_name(s.get("protocolMappers") or [])})
+            for s in _get(kc, "/client-scopes", deadline)
+            if s.get("name")
+        },
+    )
+    section(
+        "default_client_scopes",
+        lambda: {
+            "default": sorted(s.get("name", "") for s in _get(kc, "/default-default-client-scopes", deadline)),
+            "optional": sorted(s.get("name", "") for s in _get(kc, "/default-optional-client-scopes", deadline)),
+        },
+    )
+    section("components", lambda: _components(_get(kc, "/components", deadline)))
+    section("identity_providers", lambda: _by_name(_get(kc, "/identity-provider/instances", deadline), "alias"))
 
     return {
         "version": SNAPSHOT_VERSION,
@@ -362,7 +414,8 @@ def diff(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
     """What changed from snapshot ``old`` to snapshot ``new``.
 
     Returns rows ``{"section", "key", "change": "added"|"removed"|"changed", "fields"}``;
-    ``fields`` (for ``changed``) is a list of ``(path, old, new)``. A section missing from
+    ``fields`` (for ``changed``) is a list of ``(path, old, new)``, with :data:`ABSENT` for a
+    field that is not there on one side. A section missing from
     either snapshot (not readable then or now) is not compared.
     """
     rows: list[dict[str, Any]] = []
@@ -378,18 +431,40 @@ def diff(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
                 rows.append({"section": section, "key": key, "change": "added", "fields": []})
             elif a[key] != b[key]:
                 fa, fb = _flatten(a[key]), _flatten(b[key])
-                fields = [(p, fa.get(p), fb.get(p)) for p in sorted(set(fa) | set(fb)) if fa.get(p) != fb.get(p)]
+                fields = [
+                    (p, fa.get(p, ABSENT), fb.get(p, ABSENT))
+                    for p in sorted(set(fa) | set(fb))
+                    if fa.get(p, ABSENT) != fb.get(p, ABSENT)
+                ]
                 rows.append({"section": section, "key": key, "change": "changed", "fields": fields})
     return rows
 
 
-def _short(value: Any, limit: int = 120) -> str:
+def _short(value: Any, limit: int | None = 120) -> str:
     text = json.dumps(value, ensure_ascii=False, sort_keys=True) if not isinstance(value, str) else value
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if limit is None or len(text) <= limit else text[: limit - 1] + "…"
 
 
-def format_diff(rows: list[dict[str, Any]], max_lines: int | None = 40) -> list[str]:
-    """Markdown bullet lines for :func:`diff` rows, at most ``max_lines`` of them (``None``: all)."""
+def _change(a: Any, b: Any, limit: int | None) -> str:
+    """``old -> new``; for two lists, what was added and removed (a long list cut at
+    ``limit`` would otherwise print the same on both sides)."""
+    if isinstance(a, list) and isinstance(b, list):
+        added = [x for x in b if x not in a]
+        removed = [x for x in a if x not in b]
+        if not added and not removed:
+            return f"order changed -> {_short(b, limit)}"
+        parts = []
+        if added:
+            parts.append(f"added {_short(added, limit)}")
+        if removed:
+            parts.append(f"removed {_short(removed, limit)}")
+        return "; ".join(parts)
+    return f"{_short(a, limit)} -> {_short(b, limit)}"
+
+
+def format_diff(rows: list[dict[str, Any]], max_lines: int | None = 40, value_limit: int | None = 120) -> list[str]:
+    """Markdown bullet lines for :func:`diff` rows, at most ``max_lines`` of them, each value
+    cut at ``value_limit`` characters (``None``: no limit)."""
     lines: list[str] = []
     for r in rows:
         where = f"{r['section']}/{r['key']}" if r["key"] else r["section"]
@@ -398,7 +473,7 @@ def format_diff(rows: list[dict[str, Any]], max_lines: int | None = 40) -> list[
             continue
         for path, a, b in r["fields"]:
             field = f".{path}" if path else ""
-            lines.append(f"- {where}{field}: {_short(a)} -> {_short(b)}")
+            lines.append(f"- {where}{field}: {_change(a, b, value_limit)}")
     if max_lines is not None and len(lines) > max_lines:
         rest = len(lines) - max_lines
         lines = lines[:max_lines] + [f"- … {rest} more (call get_config_changes for the full list)"]

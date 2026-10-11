@@ -25,6 +25,7 @@ from . import __version__ as _version
 from . import config_snapshot
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .group_changes import apply_changes, load_config, plan_changes
+from .redaction import looks_like_credential_key
 from .sites import SiteClassifier
 
 
@@ -149,27 +150,9 @@ def _user_attribute_whitelist() -> list[str]:
     return _split_csv(os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", ""))
 
 
-#: Substrings (case-insensitive) that mark an attribute key as credential-shaped, so
-#: get_user refuses to print its value even if an operator whitelists it — a safety
-#: net for the common naming patterns, not a guarantee: a credential attribute named
-#: outside these patterns is not caught. Deliberately excludes bare "key" and "otp",
-#: which also match innocuous metadata keys (e.g. "totp_enabled").
-_CREDENTIAL_KEY_SUBSTRINGS = (
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "credential",
-    "private_key",
-    "api_key",
-    "apikey",
-)
-
-
-def _looks_like_credential_key(attribute_key: str) -> bool:
-    """True if `attribute_key` contains a credential-shaped substring (case-insensitive)."""
-    lowered = attribute_key.lower()
-    return any(marker in lowered for marker in _CREDENTIAL_KEY_SUBSTRINGS)
+#: get_user refuses to print a whitelisted attribute whose key looks credential-shaped.
+#: The markers are shared with the configuration snapshots (see :mod:`.redaction`).
+_looks_like_credential_key = looks_like_credential_key
 
 
 def _with_warning(text: str, truncated: bool) -> str:
@@ -2384,7 +2367,9 @@ def get_config_changes(baseline_date: str = "") -> str:
     composite roles, authentication flows and their executions, required actions,
     clients (redirect URIs, flows allowed, flow overrides, protocol mappers), client
     scopes, default client scopes, components and, when readable, identity providers.
-    Secrets are never read into the comparison.
+    Values under credential-named keys (``secret``, ``password``, ``privateKey``,
+    ``apiKey``, ...) are replaced with ``<redacted>`` before anything is compared or stored,
+    so a changed secret does not show as a change.
 
     The snapshots are written by ``daily_brief`` (the first run of each day); this tool
     never writes one. Use it to see the full list when ``daily_brief`` reports [CONFIG]
@@ -2417,17 +2402,30 @@ def get_config_changes(baseline_date: str = "") -> str:
         return f"Configuration could not be read in full ({exc}); nothing was compared."
     rows = config_snapshot.diff(base_snap, current)
     lines = [f"Configuration changes since the snapshot of {base_date.isoformat()}: {len(rows)}"]
-    lines += config_snapshot.format_diff(rows, max_lines=None) or ["- none"]
+    lines += config_snapshot.format_diff(rows, max_lines=None, value_limit=None) or ["- none"]
     skipped = sorted(set(base_snap.get("unavailable", [])) | set(current.get("unavailable", [])))
     if skipped:
         lines.append(f"(not compared, not readable by this service account: {', '.join(skipped)})")
     return "\n".join(lines)
 
 
-def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], list[str]]:
-    """The configuration part of daily_brief: ``(warnings, section lines)``. Never raises."""
+#: Most of daily_brief's shared deadline the configuration part may use; the rest is left
+#: for the login events the spray and brute-force checks need.
+_CONFIG_BUDGET_SECONDS = 15.0
+
+
+def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tuple[list[str], list[str]]:
+    """The configuration part of daily_brief: ``(warnings, section lines)``. Never raises.
+
+    Bounded by the brief's shared ``deadline`` and, within it, by
+    :data:`_CONFIG_BUDGET_SECONDS`. Admin events are read from ``date_from`` (a day) and
+    kept from ``since_ms`` on, so an event is reported in one brief, not two.
+    """
     warnings: list[str] = []
     lines = ["### Configuration"]
+    own = deadline_after(_CONFIG_BUDGET_SECONDS)
+    if deadline is not None:
+        deadline = min(deadline, own) if own is not None else deadline
 
     try:
         evts, evts_trunc = _kc().get_admin_events_all(
@@ -2437,6 +2435,7 @@ def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], li
             max_events=200,
             deadline=deadline,
         )
+        evts = [e for e in evts if int(e.get("time", 0)) >= since_ms]
     except Exception as exc:
         print(f"daily_brief config events: {type(exc).__name__}: {exc}", file=sys.stderr)
         evts, evts_trunc = None, False
@@ -2533,9 +2532,10 @@ def daily_brief(
     # reports a lower bound).
     deadline = deadline_after(_deadline_seconds())
     cap = _max_events()
-    # The configuration check is small (a few seconds) and runs first, so the event reads
-    # that follow cannot use up the shared deadline before it.
-    config_warnings, config_lines = _config_brief(date_from, deadline)
+    since_ms = int((datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000)
+    # The configuration check runs first, capped at _CONFIG_BUDGET_SECONDS of the shared
+    # deadline: the event reads that follow cannot starve it, and it cannot starve them.
+    config_warnings, config_lines = _config_brief(date_from, since_ms, deadline)
     try:
         success, failure, login_trunc = _fetch_login_events(date_from=date_from, deadline=deadline)
         pw_updates, pw_trunc = _kc().get_events_all(
@@ -2574,7 +2574,7 @@ def daily_brief(
     spray = _spray_analysis(
         success,
         failure,
-        since_ms=int((datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000),
+        since_ms=since_ms,
         min_users=10,
         max_success_rate=0.2,
         min_report_users=3,

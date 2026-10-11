@@ -243,9 +243,13 @@ fields; `get_config_changes` lists all of them.
   default client scopes, components, and identity providers when the service account may
   read them. Group role mappings and client roles are not in the snapshot; their admin
   events are reported instead.
-- Secrets are not stored: values under keys ending in `secret`, `password`, `privateKey`,
-  `credential`, `token` and similar are replaced with `<redacted>`, so a changed secret
-  does not show as a change. Long values (certificates, public keys) are stored as a hash.
+- Secrets are not stored: string values under keys containing `secret`, `password`,
+  `privateKey`, `apiKey`, `credential`, `token` and similar (the markers `get_user` also
+  uses) are replaced with `<redacted>`, so a changed secret does not show as a change.
+  `true`/`false` and numbers under such keys are settings and stay visible, except under
+  a field that is itself a secret (`...password`, `...secret`). This is a safety net for
+  the common names, not a guarantee. Long values (certificates, public keys) are stored
+  as a hash.
 - Only a complete read is stored. When the time budget runs out, the brief says the
   comparison was skipped and the previous baseline stays.
 - Snapshots are written only by `daily_brief`, and only the first one of a day, so a change
