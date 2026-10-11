@@ -55,6 +55,7 @@ CONFIG_EVENT_TYPES = (
     "CLIENT_SCOPE",
     "CLIENT_SCOPE_MAPPING",
     "CLIENT_SCOPE_CLIENT_MAPPING",
+    "REALM_SCOPE_MAPPING",
     "AUTH_FLOW",
     "AUTH_EXECUTION",
     "AUTH_EXECUTION_FLOW",
@@ -69,6 +70,8 @@ CONFIG_EVENT_TYPES = (
     "AUTHORIZATION_POLICY",
     "AUTHORIZATION_SCOPE",
     "AUTHORIZATION_RESOURCE",
+    "USER_PROFILE",
+    "CLIENT_INITIAL_ACCESS_MODEL",
 )
 
 #: Key suffixes whose values are secrets, compared after lower-casing and removing ``.``,
@@ -139,9 +142,12 @@ class SnapshotIncomplete(Exception):
     """A snapshot could not be read in full (time budget, size cap); it is not stored."""
 
 
+def _normalized(key: str) -> str:
+    return key.lower().replace(".", "").replace("_", "").replace("-", "")
+
+
 def _is_secret_key(key: str) -> bool:
-    normalized = key.lower().replace(".", "").replace("_", "").replace("-", "")
-    return normalized.endswith(_SECRET_SUFFIXES)
+    return _normalized(key).endswith(_SECRET_SUFFIXES)
 
 
 def _is_volatile_key(key: str) -> bool:
@@ -149,12 +155,18 @@ def _is_volatile_key(key: str) -> bool:
 
 
 def _holds_secret(key: str, value: Any) -> bool:
-    """A secret-named key with a string value. Flags (``revokeRefreshToken: true``,
-    ``"...use_refresh_token": "false"``) and numbers are settings, not secrets."""
+    """A secret-named key with a string value.
+
+    Booleans and numbers are settings (``revokeRefreshToken: true``). A ``"true"`` /
+    ``"false"`` string is a setting only under a ``...token`` key (client attributes such
+    as ``client_credentials.use_refresh_token``); a password, secret or credential field
+    is redacted whatever it holds.
+    """
     if not _is_secret_key(key):
         return False
+    flags = ("true", "false") if _normalized(key).endswith("token") else ()
     values = value if isinstance(value, list) else [value]
-    return any(isinstance(v, str) and v not in ("", "true", "false") for v in values)
+    return any(isinstance(v, str) and v != "" and v not in flags for v in values)
 
 
 def _scrub(value: Any) -> Any:

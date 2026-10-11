@@ -182,6 +182,10 @@ class TestCollect:
         assert attrs["saml.encryption.private.key"] == cs.REDACTED
         assert cs.REDACTED in text
 
+    def test_a_password_that_reads_like_a_flag_is_still_redacted(self, kc):
+        kc.realm["smtpServer"]["password"] = "false"
+        assert cs.collect(kc)["sections"]["realm"]["smtpServer"]["password"] == cs.REDACTED
+
     def test_settings_named_like_secrets_stay_visible(self, kc):
         realm = cs.collect(kc)["sections"]["realm"]
         assert realm["passwordPolicy"] == "length(12)"
@@ -410,6 +414,29 @@ class TestDailyBriefConfig:
         out = server.daily_brief()
         assert "[CONFIG] 1 configuration admin event(s)" in out
         assert "REALM_ROLE_MAPPING" in out
+
+    @patch.object(server, "_kc")
+    def test_section_unreadable_in_the_baseline_is_disclosed(self, mock, kc, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_STATE_DIR", str(tmp_path))
+        kc.idp_status = 403
+        cs.save_if_first_today(str(tmp_path), server._local_today() - timedelta(days=1), cs.collect(kc))
+        kc.idp_status = 200  # readable today, but there is nothing to compare it with
+        _brief_mocks(mock, kc)
+        out = server.daily_brief()
+        assert "Not compared (not readable then or now): identity_providers" in out
+
+    @patch.object(server, "_kc")
+    def test_configuration_is_read_before_the_events_under_one_deadline(self, mock, kc, monkeypatch):
+        monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
+        _brief_mocks(mock, kc)
+        order = []
+        m = mock.return_value
+        admin = m.get_admin_events_all.side_effect
+        m.get_admin_events_all.side_effect = lambda **kw: (order.append(("admin", kw["deadline"])), admin(**kw))[1]
+        m.get_events_all.side_effect = lambda *a, **kw: (order.append(("events", kw["deadline"])), ([], False))[1]
+        server.daily_brief()
+        assert order[0][0] == "admin" and "REALM" in m.get_admin_events_all.call_args_list[0].kwargs["resource_types"]
+        assert len({d for _, d in order}) == 1
 
     @patch.object(server, "_kc")
     def test_partial_read_keeps_the_previous_baseline(self, mock, kc, tmp_path, monkeypatch):

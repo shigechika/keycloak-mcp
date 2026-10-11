@@ -2366,11 +2366,6 @@ def get_realm_security_defenses() -> str:
     return "\n".join(lines)
 
 
-#: Extra time the configuration check in daily_brief may use past the brief's own deadline,
-#: so that a long event read on a busy day does not also skip the comparison.
-_CONFIG_EXTRA_SECONDS = 10.0
-
-
 def _state_dir() -> str | None:
     """KEYCLOAK_STATE_DIR: where daily configuration snapshots are kept (unset = disabled)."""
     return os.environ.get("KEYCLOAK_STATE_DIR", "").strip() or None
@@ -2433,9 +2428,6 @@ def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], li
     """The configuration part of daily_brief: ``(warnings, section lines)``. Never raises."""
     warnings: list[str] = []
     lines = ["### Configuration"]
-    budget = deadline
-    if deadline is not None:
-        budget = max(deadline, deadline_after(_CONFIG_EXTRA_SECONDS) or deadline)
 
     try:
         evts, evts_trunc = _kc().get_admin_events_all(
@@ -2443,7 +2435,7 @@ def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], li
             resource_types=list(config_snapshot.CONFIG_EVENT_TYPES),
             date_from=date_from,
             max_events=200,
-            deadline=budget,
+            deadline=deadline,
         )
     except Exception as exc:
         print(f"daily_brief config events: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -2456,7 +2448,7 @@ def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], li
     else:
         try:
             today = _local_today()
-            current = config_snapshot.collect(_kc(), budget)
+            current = config_snapshot.collect(_kc(), deadline)
             base = config_snapshot.load_baseline(state, today)
             written = config_snapshot.save_if_first_today(state, today, current)
             if base is None:
@@ -2475,8 +2467,11 @@ def _config_brief(date_from: str, deadline: float | None) -> tuple[list[str], li
                     lines.append(f"- No change since the snapshot of {base_date.isoformat()}")
             if not written and base is not None:
                 lines.append("- (today's snapshot was already recorded; it is the baseline for tomorrow)")
-            if current.get("unavailable"):
-                lines.append(f"- Not compared (not readable): {', '.join(current['unavailable'])}")
+            skipped = set(current.get("unavailable", []))
+            if base is not None:
+                skipped |= set(base[1].get("unavailable", []))
+            if skipped:
+                lines.append(f"- Not compared (not readable then or now): {', '.join(sorted(skipped))}")
         except config_snapshot.SnapshotIncomplete as exc:
             warnings.append(f"[PARTIAL] configuration not compared ({exc}); the previous baseline is kept")
         except Exception as exc:
@@ -2538,6 +2533,9 @@ def daily_brief(
     # reports a lower bound).
     deadline = deadline_after(_deadline_seconds())
     cap = _max_events()
+    # The configuration check is small (a few seconds) and runs first, so the event reads
+    # that follow cannot use up the shared deadline before it.
+    config_warnings, config_lines = _config_brief(date_from, deadline)
     try:
         success, failure, login_trunc = _fetch_login_events(date_from=date_from, deadline=deadline)
         pw_updates, pw_trunc = _kc().get_events_all(
@@ -2601,7 +2599,6 @@ def daily_brief(
             "[PARTIAL] event data incomplete — the look-back window exceeded the time/size budget; "
             "counts are a lower bound (narrow since_hours or raise KEYCLOAK_DEADLINE)"
         )
-    config_warnings, config_lines = _config_brief(date_from, deadline)
     warnings += config_warnings
 
     total_sessions = sum(int(s.get("active", 0)) for s in session_stats)
