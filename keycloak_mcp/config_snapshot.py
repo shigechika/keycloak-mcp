@@ -2,7 +2,8 @@
 
 A snapshot is the security-relevant configuration of the realm, read through the Admin
 REST API and reduced to stable, comparable JSON: realm settings, event settings, realm
-roles and what each composite role contains, authentication flows and their executions,
+roles and what each composite role contains, authentication flows and their executions
+(with each step's authenticator settings),
 required actions, clients, client scopes, default client scopes, components (user
 profile, key providers, client registration policies) and, when the service account may
 read them, identity providers.
@@ -17,9 +18,9 @@ an unchanged realm are equal.
 Snapshots are stored as one file per local date under ``<state dir>/config-snapshots``.
 Only a complete snapshot is written: if a read fails or the time budget runs out, nothing
 is stored and the previous baseline stays in place, so a partial read never shows up as
-"removed" settings the next day. The first snapshot of a day is kept; later ones that day
-are compared but not written, so a change made during the day is reported again the next
-morning.
+"removed" settings the next day. The first snapshot of a day is kept, also when two runs
+race; later ones that day are compared but not written, so a change made during the day
+is reported again the next morning.
 """
 
 from __future__ import annotations
@@ -70,14 +71,15 @@ CONFIG_EVENT_TYPES = (
     "AUTHORIZATION_RESOURCE",
 )
 
-#: Key suffixes (lower case) whose values are secrets. A suffix, not a substring, so that
-#: ``passwordPolicy`` or ``accessTokenLifespan`` stay visible.
+#: Key suffixes whose values are secrets, compared after lower-casing and removing ``.``,
+#: ``_`` and ``-`` (so ``saml.signing.private.key`` and ``private_key`` both match
+#: ``privatekey``). A suffix, not a substring, so that ``passwordPolicy`` or
+#: ``accessTokenLifespan`` stay visible.
 _SECRET_SUFFIXES = (
     "secret",
     "password",
     "passwd",
     "privatekey",
-    "private_key",
     "credential",
     "token",
     "keystore",
@@ -138,7 +140,8 @@ class SnapshotIncomplete(Exception):
 
 
 def _is_secret_key(key: str) -> bool:
-    return key.lower().endswith(_SECRET_SUFFIXES)
+    normalized = key.lower().replace(".", "").replace("_", "").replace("-", "")
+    return normalized.endswith(_SECRET_SUFFIXES)
 
 
 def _is_volatile_key(key: str) -> bool:
@@ -231,6 +234,17 @@ def collect(kc, deadline: float | None = None) -> dict[str, Any]:
     flows = _get(kc, "/authentication/flows", deadline)
     flow_alias = {f["id"]: f.get("alias", f["id"]) for f in flows}
     flow_section: dict[str, Any] = {}
+    auth_configs: dict[str, Any] = {}
+
+    def auth_config(config_id: str | None) -> Any:
+        # The settings of one step (for example the role a conditional step checks).
+        if not config_id:
+            return None
+        if config_id not in auth_configs:
+            c = _get(kc, f"/authentication/config/{quote(config_id, safe='')}", deadline)
+            auth_configs[config_id] = _scrub({"alias": c.get("alias"), "config": c.get("config") or {}})
+        return auth_configs[config_id]
+
     for f in flows:
         if not f.get("topLevel", True):
             continue
@@ -239,20 +253,20 @@ def collect(kc, deadline: float | None = None) -> dict[str, Any]:
             "description": f.get("description"),
             "providerId": f.get("providerId"),
             "builtIn": f.get("builtIn"),
-            "executions": [
-                _scrub(
+            # Keyed by position and name, so a changed step shows its own fields.
+            "executions": {
+                f"{i:02d} {e.get('displayName') or e.get('providerId') or ''}": _scrub(
                     {
                         "level": e.get("level"),
-                        "index": e.get("index"),
-                        "displayName": e.get("displayName"),
                         "providerId": e.get("providerId"),
                         "requirement": e.get("requirement"),
                         "authenticationFlow": e.get("authenticationFlow"),
                         "alias": e.get("alias"),
+                        "authenticationConfig": auth_config(e.get("authenticationConfig")),
                     }
                 )
-                for e in execs
-            ],
+                for i, e in enumerate(execs)
+            },
         }
     sections["flows"] = flow_section
 
@@ -362,8 +376,8 @@ def _short(value: Any, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def format_diff(rows: list[dict[str, Any]], max_lines: int = 40) -> list[str]:
-    """Markdown bullet lines for :func:`diff` rows, at most ``max_lines`` of them."""
+def format_diff(rows: list[dict[str, Any]], max_lines: int | None = 40) -> list[str]:
+    """Markdown bullet lines for :func:`diff` rows, at most ``max_lines`` of them (``None``: all)."""
     lines: list[str] = []
     for r in rows:
         where = f"{r['section']}/{r['key']}" if r["key"] else r["section"]
@@ -373,7 +387,7 @@ def format_diff(rows: list[dict[str, Any]], max_lines: int = 40) -> list[str]:
         for path, a, b in r["fields"]:
             field = f".{path}" if path else ""
             lines.append(f"- {where}{field}: {_short(a)} -> {_short(b)}")
-    if len(lines) > max_lines:
+    if max_lines is not None and len(lines) > max_lines:
         rest = len(lines) - max_lines
         lines = lines[:max_lines] + [f"- … {rest} more (call get_config_changes for the full list)"]
     return lines
@@ -430,10 +444,14 @@ def save_if_first_today(state_dir: str, today: date, snap: dict[str, Any]) -> bo
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False, sort_keys=True, indent=1)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, target)
-    except BaseException:
+        # A hard link fails when the target exists, so of two runs racing past the check
+        # above the first one wins and the other leaves today's snapshot alone.
+        try:
+            os.link(tmp, target)
+        except FileExistsError:
+            return False
+    finally:
         Path(tmp).unlink(missing_ok=True)
-        raise
     for _, old in _dated_files(directory)[:-KEEP_SNAPSHOTS]:
         old.unlink(missing_ok=True)
     return True

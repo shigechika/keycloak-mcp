@@ -48,6 +48,8 @@ class FakeKC:
                 "redirectUris": ["https://b.example/*", "https://a.example/*"],
                 "authenticationFlowBindingOverrides": {"browser": "f-otp"},
                 "attributes": {
+                    "saml.signing.private.key": "MIIEshortkeybody",
+                    "saml.encryption.private.key": "K" * 600,
                     "client.secret.creation.time": "1700000000",
                     "saml.signing.certificate": CERT,
                     "client_credentials.use_refresh_token": "false",
@@ -63,8 +65,19 @@ class FakeKC:
         ]
         self.executions = {
             "browser": [{"id": "e1", "level": 0, "index": 0, "displayName": "Cookie", "requirement": "ALTERNATIVE"}],
-            "browser otp": [{"id": "e2", "level": 0, "index": 0, "displayName": "OTP Form", "requirement": "REQUIRED"}],
+            "browser otp": [
+                {"id": "e2", "level": 0, "index": 0, "displayName": "OTP Form", "requirement": "REQUIRED"},
+                {
+                    "id": "e3",
+                    "level": 0,
+                    "index": 1,
+                    "displayName": "Condition - user role",
+                    "requirement": "REQUIRED",
+                    "authenticationConfig": "cfg-1",
+                },
+            ],
         }
+        self.auth_configs = {"cfg-1": {"id": "cfg-1", "alias": "staff only", "config": {"condUserRole": "staff"}}}
         self.roles = [
             {"id": "r-admin", "name": "dept-admin", "composite": True, "description": "x"},
             {"id": "r-plain", "name": "plain", "composite": False},
@@ -118,6 +131,8 @@ class FakeKC:
 
             alias = unquote(path[len("/authentication/flows/") : -len("/executions")])
             return copy.deepcopy(self.executions[alias])
+        if path.startswith("/authentication/config/"):
+            return copy.deepcopy(self.auth_configs[path.rsplit("/", 1)[1]])
         if path.startswith("/roles-by-id/"):
             return copy.deepcopy(self.composites[path.split("/")[2]])
         if path == "/authentication/required-actions":
@@ -152,8 +167,19 @@ def kc():
 class TestCollect:
     def test_secrets_never_reach_the_snapshot(self, kc):
         text = json.dumps(cs.collect(kc), ensure_ascii=False)
-        for secret in ("client-secret-value", "smtp-pass-value", "hmac-secret-value", "idp-secret-value", "MIIabc"):
+        for secret in (
+            "client-secret-value",
+            "smtp-pass-value",
+            "hmac-secret-value",
+            "idp-secret-value",
+            "MIIabc",
+            "MIIEshortkeybody",
+        ):
             assert secret not in text
+        attrs = cs.collect(kc)["sections"]["clients"]["app"]["attributes"]
+        # SAML keys are named with dots; a long one must be redacted, not hashed.
+        assert attrs["saml.signing.private.key"] == cs.REDACTED
+        assert attrs["saml.encryption.private.key"] == cs.REDACTED
         assert cs.REDACTED in text
 
     def test_settings_named_like_secrets_stay_visible(self, kc):
@@ -180,7 +206,7 @@ class TestCollect:
         assert snap["roles"]["dept-admin"]["composites"] == ["realm-management:query-users"]
         assert "composites" not in snap["roles"]["plain"]
         assert set(snap["flows"]) == {"browser", "browser otp"}  # sub-flows come with their parent
-        assert snap["flows"]["browser otp"]["executions"][0]["requirement"] == "REQUIRED"
+        assert snap["flows"]["browser otp"]["executions"]["00 OTP Form"]["requirement"] == "REQUIRED"
         # The same component name under two subTypes stays two entries.
         assert {
             "ClientRegistrationPolicy/anonymous/Allowed Client Scopes",
@@ -234,6 +260,17 @@ class TestDiff:
         assert "realm-management:realm-admin" in text
         assert "realm.failureFactor: 30 -> 1000" in text
 
+    def test_authenticator_setting_change_is_seen(self, kc):
+        a = cs.collect(kc)
+        kc.auth_configs["cfg-1"]["config"]["condUserRole"] = "realm-admin"
+        rows = cs.diff(a, cs.collect(kc))
+        assert [(r["section"], r["key"]) for r in rows] == [("flows", "browser otp")]
+        text = "\n".join(cs.format_diff(rows))
+        assert (
+            "flows/browser otp.executions.01 Condition - user role.authenticationConfig.config.condUserRole: "
+            "staff -> realm-admin"
+        ) in text
+
     def test_removed_entry(self, kc):
         a = cs.collect(kc)
         kc.roles = kc.roles[:1]
@@ -261,6 +298,19 @@ class TestStorage:
         assert cs.save_if_first_today(str(tmp_path), today, later) is False
         stored = json.loads((tmp_path / cs.SNAPSHOT_DIR / "2026-10-11.json").read_text())
         assert stored["sections"]["realm"]["failureFactor"] == 30
+
+    def test_a_racing_second_writer_does_not_replace_the_first(self, tmp_path, kc, monkeypatch):
+        today = date(2026, 10, 11)
+        snap = cs.collect(kc)
+        assert cs.save_if_first_today(str(tmp_path), today, snap)
+        later = copy.deepcopy(snap)
+        later["sections"]["realm"]["failureFactor"] = 1
+        # The second run checked before the first one published.
+        monkeypatch.setattr(cs.Path, "exists", lambda self: False)
+        assert cs.save_if_first_today(str(tmp_path), today, later) is False
+        stored = json.loads((tmp_path / cs.SNAPSHOT_DIR / "2026-10-11.json").read_text())
+        assert stored["sections"]["realm"]["failureFactor"] == 30
+        assert not list((tmp_path / cs.SNAPSHOT_DIR).glob(".tmp-*"))
 
     def test_files_are_private(self, tmp_path, kc):
         cs.save_if_first_today(str(tmp_path), date(2026, 10, 11), cs.collect(kc))
@@ -406,3 +456,13 @@ class TestGetConfigChanges:
         assert out.startswith(f"Configuration changes since the snapshot of {yesterday.isoformat()}: 1")
         assert "clients/app.enabled: true -> false" in out
         assert len(list((tmp_path / cs.SNAPSHOT_DIR).glob("*.json"))) == 1
+
+    @patch.object(server, "_kc")
+    def test_lists_every_change_without_a_cap(self, mock, kc, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_STATE_DIR", str(tmp_path))
+        cs.save_if_first_today(str(tmp_path), server._local_today() - timedelta(days=1), cs.collect(kc))
+        kc.roles += [{"id": f"n{i}", "name": f"new-{i:03d}", "composite": False} for i in range(120)]
+        mock.return_value._get.side_effect = kc._get
+        mock.return_value._paginate.side_effect = kc._paginate
+        out = server.get_config_changes()
+        assert "roles/new-119: added" in out and "more" not in out

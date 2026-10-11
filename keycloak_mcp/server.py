@@ -2422,7 +2422,7 @@ def get_config_changes(baseline_date: str = "") -> str:
         return f"Configuration could not be read in full ({exc}); nothing was compared."
     rows = config_snapshot.diff(base_snap, current)
     lines = [f"Configuration changes since the snapshot of {base_date.isoformat()}: {len(rows)}"]
-    lines += config_snapshot.format_diff(rows, max_lines=500) or ["- none"]
+    lines += config_snapshot.format_diff(rows, max_lines=None) or ["- none"]
     skipped = sorted(set(base_snap.get("unavailable", [])) | set(current.get("unavailable", [])))
     if skipped:
         lines.append(f"(not compared, not readable by this service account: {', '.join(skipped)})")
