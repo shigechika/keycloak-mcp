@@ -40,6 +40,7 @@
 | `list_users_by_group(group_name, max_results=100)` | グループのメンバー |
 | `get_brute_force_status(username)` | ユーザーがブルートフォース検知によりロック中か |
 | `get_realm_security_defenses()` | ブルートフォース対策の方針と閾値、パスワードポリシー、ブラウザセキュリティヘッダー |
+| `get_config_changes(baseline_date="")` | 保存した日次スナップショットから realm の設定がどう変わったか（`KEYCLOAK_STATE_DIR` が要る。スナップショットは `daily_brief` が保存する） |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | 送信元 IP 別の失敗数ランキング |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | 1 IP の網羅的な調査（構造化 JSON） |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | `window_seconds` 内に `threshold` 回を超えてログインしたユーザー |
@@ -55,7 +56,7 @@
 | `list_clients()` | レルムの SAML / OIDC クライアント |
 | `get_client(client_id)` | クライアント1件の設定。認証フローのオーバーライド（SP 単位の MFA 切り替え）を含む。`attributes` と `protocolMappers` は出力しないので、クライアントシークレットや SAML の署名鍵はツール出力に出ない。 |
 | `get_realm_roles()` | レルムレベルのロール |
-| `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・セッション・パスワード更新・管理イベント |
+| `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・セッション・パスワード更新・管理イベント・設定の変更 |
 
 書き込みツールが実際に何をするか、`get_ip_activity` の出力の読み方、重い走査が
 共有する deadline / 部分結果の仕組みは [セキュリティ調査](investigation.ja.md)
@@ -68,6 +69,11 @@
 （既定18 — 09:00 に実行する場合ほぼ前日午後をカバー）の範囲で1つの Markdown
 レポートにまとめます。バックエンド接続に失敗した場合、内訳の欠けた部分的な
 レポートではなく、レポート全体が `## CRITICAL — <ExceptionType>` になります。
+設定の節には、ロール・ロールの割り当て・認証フロー・クライアントスコープ・
+プロトコルマッパー・コンポーネント・realm への管理操作と、`KEYCLOAK_STATE_DIR` を
+設定していれば前日以前の最新のスナップショットからの変更を出します（どちらも
+`[CONFIG]`）。その日最初の brief がその日のスナップショットを保存します。秘密は
+保存する前に伏せます。
 
 `get_admin_events` と `get_user_attribute_history` は `max_repr` を受け取り、
 KeyCloak の「representation」ペイロード（変更されたオブジェクトの JSON テキスト）

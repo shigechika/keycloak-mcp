@@ -123,6 +123,15 @@ PROBES: dict[str, Probe] = {
         allow_empty=True,
     ),
     "get_realm_security_defenses": Probe(must_match=(r"^Security defenses for realm",), min_chars=40),
+    # Read-only. Without KEYCLOAK_STATE_DIR, or before daily_brief has stored a snapshot,
+    # it says so instead of comparing.
+    "get_config_changes": Probe(
+        must_match=(
+            r"^(Configuration changes since the snapshot of \d{4}-\d{2}-\d{2}: \d+"
+            r"|No configuration snapshot before today yet"
+            r"|Configuration snapshots are not enabled)",
+        ),
+    ),
     "get_realm_roles": Probe(
         must_match=(r"^Realm roles \(\d+\):",),
         # Every realm has built-in roles; zero means the read failed, not that

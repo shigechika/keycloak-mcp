@@ -42,6 +42,7 @@ timeout.
 | `list_users_by_group(group_name, max_results=100)` | Members of a group |
 | `get_brute_force_status(username)` | Whether a user is currently locked by brute-force detection |
 | `get_realm_security_defenses()` | Brute-force policy and thresholds, password policy, browser security headers |
+| `get_config_changes(baseline_date="")` | What changed in the realm configuration since a stored daily snapshot (needs `KEYCLOAK_STATE_DIR`; snapshots are written by `daily_brief`) |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | Failure counts ranked by source IP |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | Exhaustive per-IP investigation (structured JSON) |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | Users logging in faster than `threshold` per `window_seconds` |
@@ -57,7 +58,7 @@ timeout.
 | `list_clients()` | SAML and OIDC clients in the realm |
 | `get_client(client_id)` | One client's configuration, including its authentication flow overrides (the per-SP MFA switch). Omits `attributes` and `protocolMappers`, so no client secret or SAML signing material reaches tool output. |
 | `get_realm_roles()` | Realm-level roles |
-| `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, sessions, password updates, admin events |
+| `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, sessions, password updates, admin events, configuration changes |
 
 See [Security investigation](investigation.md) for what the write tools
 actually do, how to read `get_ip_activity`'s output, and the deadline /
@@ -68,7 +69,11 @@ partial-result mechanism shared by the heavy scans.
 One Markdown report covering login stats, IPs over `ip_failure_threshold`
 failures (flagged `WARNING`), active sessions, password updates, and admin
 events, all within `since_hours` (default 18 — roughly the previous afternoon
-for a 09:00 morning run). A backend connection failure renders the whole
+for a 09:00 morning run). A Configuration section lists admin events on roles,
+role mappings, flows, client scopes, protocol mappers, components and the realm,
+and, with `KEYCLOAK_STATE_DIR` set, what changed since the latest daily snapshot
+from an earlier day (both flagged `[CONFIG]`). The first brief of a day stores
+that day's snapshot; secrets are redacted before anything is stored. A backend connection failure renders the whole
 report as `## CRITICAL — <ExceptionType>` rather than a partial brief with
 gaps unaccounted for.
 

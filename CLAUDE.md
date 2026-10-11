@@ -56,6 +56,10 @@ exist), `KEYCLOAK_GROUP_BATCH_MAX` (default 30), `KEYCLOAK_GROUP_MODE` (`multi` 
 `single` = adding replaces every other membership, no DELETE sent), `KEYCLOAK_GROUP_DEADLINE`
 (default `KEYCLOAK_DEADLINE`). The digest is a staleness check, not an approval
 token; the approval gate belongs to the client.
+Configuration snapshots (`keycloak_mcp/config_snapshot.py`): `KEYCLOAK_STATE_DIR`
+(unset = none). Only `daily_brief` writes (first run of a day, complete reads only);
+`get_config_changes` compares and never writes. Secret-named string values are redacted
+before storing.
 `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` (default unset, comma-separated attribute
 keys) opts specific custom user attributes into `get_user`'s output — unset,
 `get_user` never fetches or surfaces `attributes` at all (see
