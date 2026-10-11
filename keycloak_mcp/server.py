@@ -2441,7 +2441,8 @@ def _group_additions_brief(date_from: str, since_ms: int, deadline: float | None
             return ["[PARTIAL] group additions could not be read (time or size budget); not checked"], [
                 "- Additions to groups that carry roles: unknown (the admin events could not be read in time)"
             ]
-        found = group_additions.scan(kc, evts, deadline)
+        master = (os.environ.get("KEYCLOAK_REALM", "").strip() or "master") == "master"
+        found = group_additions.scan(kc, evts, deadline, master=master)
     except Exception as exc:
         print(f"daily_brief group additions: {type(exc).__name__}: {exc}", file=sys.stderr)
         return [f"[CONFIG] group-addition check failed ({type(exc).__name__}); see the server log"], []

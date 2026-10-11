@@ -11,7 +11,8 @@ that carry any role.
 An addition is *administrative* when the group carries a role that administers a realm:
 a ``realm-management`` client role, or in the master realm a ``<realm>-realm`` client
 role, other than the read-only ``query-*`` and ``view-*`` ones (``realm-admin``,
-``manage-users``, ``impersonation``, ...), or the master realm's ``admin`` realm role.
+``manage-users``, ``impersonation``, ...), or the master realm's ``admin`` realm role. The
+master-realm cases apply only when the scanned realm is ``master``.
 """
 
 from __future__ import annotations
@@ -30,21 +31,23 @@ _READ_ONLY_PREFIXES = ("query-", "view-")
 _MEMBERSHIP_PATH = re.compile(r"^users/([^/]+)/groups/([^/]+)$")
 
 
-def is_admin_role(label: str) -> bool:
-    """A role that administers a realm and is not read-only (see the module docstring)."""
-    if label == "admin":  # the master realm's superuser role
+def is_admin_role(label: str, master: bool = False) -> bool:
+    """A role that administers a realm and is not read-only (see the module docstring).
+    ``master``: the realm is the master realm, where ``admin`` and the ``<realm>-realm``
+    clients administer realms; elsewhere those names are ordinary application roles."""
+    if master and label == "admin":
         return True
     client, sep, role = label.partition(":")
     if not sep or not role or role.startswith(_READ_ONLY_PREFIXES):
         return False
-    return client == ADMIN_CLIENT or client.endswith("-realm")
+    return client == ADMIN_CLIENT or (master and client.endswith("-realm"))
 
 
 def _status(exc: Exception) -> int | None:
     return getattr(getattr(exc, "response", None), "status_code", None)
 
 
-def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any]:
+def scan(kc, events: list[dict], deadline: float | None = None, master: bool = False) -> dict[str, Any]:
     """Additions to role-carrying groups among ``events`` (admin events, any type), newest
     first within each tier.
 
@@ -111,7 +114,7 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
                 "user_id": user_id,
                 "group": path,
                 "roles": roles,
-                "admin_roles": [r for r in roles if is_admin_role(r)],
+                "admin_roles": [r for r in roles if is_admin_role(r, master)],
                 "admin": auth.get("userId", ""),
                 "ip": auth.get("ipAddress", ""),
             }

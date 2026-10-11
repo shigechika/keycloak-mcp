@@ -224,6 +224,10 @@ class RoleResolver:
         (a rename or move of a path cannot swap in another group). Falls back to the path
         when the server does not return ``parentId``."""
         if "parentId" not in group and group.get("path", "").count("/") > 1:
+            # No parentId: walk by path, but only if the path still names this group.
+            here = self.group(group["path"])
+            if here is None or here.get("id") != group.get("id"):
+                raise RolesUnknown(f"group '{group['path']}' no longer resolves to the same group")
             return self.roles(group["path"])
         names: set[str] = set()
         seen: set[str] = set()

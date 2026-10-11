@@ -133,9 +133,30 @@ def test_is_admin_role():
     assert not ga.is_admin_role("other-client:manage-users")
     assert not ga.is_admin_role("センター管理者")
     # master realm: the superuser role and the per-realm admin clients
-    assert ga.is_admin_role("admin")
-    assert ga.is_admin_role("myrealm-realm:manage-users")
-    assert not ga.is_admin_role("myrealm-realm:view-users")
+    assert ga.is_admin_role("admin", master=True)
+    assert ga.is_admin_role("myrealm-realm:manage-users", master=True)
+    assert not ga.is_admin_role("myrealm-realm:view-users", master=True)
+    # elsewhere those are ordinary application roles
+    assert not ga.is_admin_role("admin")
+    assert not ga.is_admin_role("billing-realm:manage-users")
+
+
+def test_path_fallback_refuses_a_path_now_naming_another_group():
+    kc = FakeKC()  # no parentId in the representations: the path fallback is used
+    e = _add(kc, "u1", "/Staff/HQ/IT")
+    it = kc.groups["/Staff/HQ/IT"]
+    orig = kc.get_group
+
+    def renamed_meanwhile(gid, deadline=None):
+        g = orig(gid, deadline)
+        if gid == it["id"]:
+            # Read by ID, then the path is taken by another group before the roles are read.
+            kc.groups["/Staff/HQ/IT"] = {"id": "g-other", "path": "/Staff/HQ/IT", "name": "IT"}
+        return g
+
+    kc.get_group = renamed_meanwhile
+    out = ga.scan(kc, [e])
+    assert out["rows"] == [] and out["unresolved"] == 1
 
 
 def _with_parent_ids(kc):
