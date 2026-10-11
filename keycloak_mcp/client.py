@@ -367,6 +367,10 @@ class KeyCloakClient:
         """Role mappings assigned directly to a group (``realmMappings`` / ``clientMappings``)."""
         return self._get(f"/groups/{group_id}/role-mappings", deadline=deadline)
 
+    def get_group(self, group_id: str, deadline: float | None = None) -> dict:
+        """Get a group by ID (its ``path`` included)."""
+        return self._get(f"/groups/{quote(group_id, safe='')}", deadline=deadline)
+
     def get_role_composites(self, role_id: str, deadline: float | None = None) -> list[dict]:
         """The roles a composite role contains (realm and client roles, one level down)."""
         return self._get(f"/roles-by-id/{role_id}/composites", deadline=deadline)

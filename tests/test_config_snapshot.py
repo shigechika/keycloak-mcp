@@ -548,7 +548,7 @@ class TestDailyBriefConfig:
         server.daily_brief()
         assert order[0][0] == "admin" and "REALM" in m.get_admin_events_all.call_args_list[0].kwargs["resource_types"]
         config_deadline = order[0][1]
-        event_deadlines = {d for kind, d in order[1:]}
+        event_deadlines = {d for kind, d in order if kind == "events"}
         # The events share one deadline; the configuration part stops earlier, within it.
         assert len(event_deadlines) == 1
         assert config_deadline <= min(event_deadlines)

@@ -67,7 +67,7 @@ class _Incomplete(Exception):
     """A membership list could not be read completely."""
 
 
-class _RolesUnknown(Exception):
+class RolesUnknown(Exception):
     """A group's roles cannot be read, so the role change of a row cannot be reported."""
 
 
@@ -163,12 +163,12 @@ def _remaining(deadline: float | None) -> float | None:
     return None if deadline is None else deadline - time.monotonic()
 
 
-class _Resolver:
-    """Resolve and vet group paths. One instance caches lookups for the life of one check."""
+class RoleResolver:
+    """Resolve group paths and the roles membership in them carries. One instance caches
+    lookups for the life of one check."""
 
-    def __init__(self, kc, cfg: GroupWriteConfig, deadline: float | None):
+    def __init__(self, kc, deadline: float | None):
         self.kc = kc
-        self.cfg = cfg
         self.deadline = deadline
         self._groups: dict[str, dict | None] = {}
         self._group_roles: dict[str, list[str]] = {}
@@ -219,14 +219,22 @@ class _Resolver:
 
     def roles(self, path: str) -> list[str]:
         """Roles a member of ``path`` holds through it: its own and every ancestor's (sorted).
-        Raises :class:`_RolesUnknown` when ``path`` or an ancestor does not resolve."""
+        Raises :class:`RolesUnknown` when ``path`` or an ancestor does not resolve."""
         names: set[str] = set()
         for anc in _ancestors(path):
             g = self.group(anc) if _valid_path(anc) else None
             if g is None:
-                raise _RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
+                raise RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
             names.update(self._own_roles(g["id"]))
         return sorted(names)
+
+
+class _Resolver(RoleResolver):
+    """:class:`RoleResolver` that also vets a path against the write configuration."""
+
+    def __init__(self, kc, cfg: GroupWriteConfig, deadline: float | None):
+        super().__init__(kc, deadline)
+        self.cfg = cfg
 
     def vet(self, path: str) -> tuple[dict | None, str]:
         """Resolve ``path`` and check it may be written. Returns ``(group, problem)``."""
@@ -470,7 +478,7 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
             if row["status"] in (OK, NO_OP):
                 try:
                     _role_impact(row, current, resolver)
-                except _RolesUnknown as exc:
+                except RolesUnknown as exc:
                     # A move whose role change cannot be shown is not offered for approval
                     row["status"] = str(exc)
             rows.append(row)

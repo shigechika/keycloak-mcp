@@ -22,7 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
 from . import __version__ as _version
-from . import config_snapshot
+from . import config_snapshot, group_additions
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .group_changes import apply_changes, load_config, plan_changes
 from .redaction import looks_like_credential_key
@@ -2414,6 +2414,65 @@ def get_config_changes(baseline_date: str = "") -> str:
 _CONFIG_BUDGET_SECONDS = 15.0
 
 
+def _short_roles(roles: list[str], limit: int = 100) -> str:
+    text = ", ".join(roles)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _group_additions_brief(date_from: str, since_ms: int, deadline: float | None) -> tuple[list[str], list[str]]:
+    """Additions to groups that carry roles (see :mod:`.group_additions`). Never raises."""
+    warnings: list[str] = []
+    lines: list[str] = []
+    kc = _kc()
+    try:
+        evts, trunc = kc.get_admin_events_all(
+            operation_types=["CREATE"],
+            resource_types=["GROUP_MEMBERSHIP"],
+            date_from=date_from,
+            max_events=1000,
+            deadline=deadline,
+        )
+        evts = [e for e in evts if int(e.get("time", 0)) >= since_ms]
+        found = group_additions.scan(kc, evts, deadline)
+    except Exception as exc:
+        print(f"daily_brief group additions: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return [f"[CONFIG] group-addition check failed ({type(exc).__name__}); see the server log"], []
+
+    rows = found["rows"]
+    admin_rows = [r for r in rows if r["admin_roles"]]
+    if admin_rows:
+        warnings.append(
+            f"[PRIVILEGE] {len(admin_rows)} addition(s) to groups that grant administrative roles "
+            f"({', '.join(sorted({r['group'] for r in admin_rows}))})"
+        )
+    if trunc or not found["complete"]:
+        warnings.append(
+            f"[PARTIAL] group additions checked for {found['checked']} of {len(evts)} "
+            "(time or size budget); the rest were not checked"
+        )
+    lines.append(
+        f"- Additions to groups that carry roles: {len(rows)} (administrative: {len(admin_rows)}) "
+        f"of {len(evts)} group additions"
+        + (f"; {found['unresolved']} could not be resolved" if found["unresolved"] else "")
+    )
+    names: dict[str, str] = {}
+    for r in rows[:15]:
+        uid = r["user_id"]
+        if uid not in names:
+            try:
+                names[uid] = (kc.get_user_by_id(uid, deadline=deadline) or {}).get("username") or uid
+            except Exception:
+                names[uid] = uid
+        shown = r["admin_roles"] or [x for x in r["roles"] if ":" not in x] or r["roles"]
+        lines.append(
+            f"  - {_format_ts(r['time'])}  {names[uid]} -> {r['group']}  roles: {_short_roles(shown)}  "
+            f"admin={r['admin']} ip={_label_ip(r['ip']) if r['ip'] else '-'}"
+        )
+    if len(rows) > 15:
+        lines.append(f"  - … {len(rows) - 15} more")
+    return warnings, lines
+
+
 def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tuple[list[str], list[str]]:
     """The configuration part of daily_brief: ``(warnings, section lines)``. Never raises.
 
@@ -2476,6 +2535,10 @@ def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tupl
         except Exception as exc:
             print(f"daily_brief config: {type(exc).__name__}: {exc}", file=sys.stderr)
             warnings.append(f"[CONFIG] configuration check failed ({type(exc).__name__}); see the server log")
+
+    w, more = _group_additions_brief(date_from, since_ms, deadline)
+    warnings += w
+    lines += more
 
     if evts is not None:
         if evts:
