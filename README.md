@@ -200,8 +200,9 @@ deployment that shares the binary without an approval step never exposes them.
   Realm roles appear by name and client roles as `client:role`; roles inherited from
   ancestor groups and the contents of composite roles (any depth) are included. Show the
   gains and losses to the person approving. They are part of the `digest`, and the
-  destination's roles are read again right before each add, so a role attached (or added
-  to a composite) after the approval stops the run. A row whose role change cannot be
+  destination's roles are read again before each add (at most once every 5 seconds per
+  group within one call), so a role attached (or added to a composite) after the approval
+  stops the run. A row whose role change cannot be
   shown (a current group that does not resolve by path, such as one with `/` in its name)
   is refused.
   Changed in 1.3.0: earlier versions refused any group with role mappings. If you relied on
