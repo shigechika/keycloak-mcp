@@ -189,15 +189,20 @@ deployment that shares the binary without an approval step never exposes them.
   Set it when your KeyCloak behaves this way; in `multi` mode such a server makes every
   move stop as a concurrent change, and in `single` mode a server that keeps the old group
   makes the move stop with a message that the mode does not match.
-- Refused targets: anything outside the root, the root itself, protected groups and their
-  descendants, and any group that carries realm or client role mappings directly or
-  through an ancestor.
-- No role mappings does not mean no privilege. A group can grant access through
-  membership alone (a SAML/OIDC group mapper that a service provider checks, or an
-  authorization-services group policy). List every such group in
-  `KEYCLOAK_PROTECTED_GROUPS`; the role check cannot see them. Every protected path must
-  exist in KeyCloak: if one does not resolve (renamed, moved, different case), every plan
-  is refused until the configuration is fixed.
+- Refused targets: anything outside the root, the root itself, and protected groups and
+  their descendants.
+- A group that carries roles is not refused: moving someone into a department's admin
+  group is an ordinary transfer when the approver can do the same in the admin console.
+  Each plan row lists the roles the user gains (`add_roles`) and loses (`remove_roles`),
+  realm roles by name and client roles as `client:role`, including those inherited from
+  ancestor groups. Show them to the person approving. They are part of the `digest`, and
+  the destination's roles are read again right before each add, so a role attached after
+  the approval stops the run.
+- Membership can grant access without any role (a SAML/OIDC group mapper that a service
+  provider checks, an authorization-services group policy). List the groups that must
+  never be written by these tools, whatever their roles, in `KEYCLOAK_PROTECTED_GROUPS`.
+  Every protected path must exist in KeyCloak: if one does not resolve (renamed, moved,
+  different case), every plan is refused until the configuration is fixed.
 - The `digest` shows that nothing changed since the plan. It does not prove that a person
   approved the plan: any caller of `plan_group_changes` gets a valid digest. Put the
   approval in front of `apply_group_changes`, for example a client that keeps the digest

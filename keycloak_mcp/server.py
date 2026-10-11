@@ -1099,8 +1099,10 @@ def plan_group_changes(changes: list[dict]) -> dict:
     reason it cannot run, including a ``remove`` group the user is not in) and ``errors``
     (for example the time budget ran out, split the batch; or a protected group configured on
     the server does not exist, which blocks every plan until fixed). Groups outside the server's
-    writable root, protected groups, and groups that carry realm/client roles (directly or
-    via an ancestor) are refused.
+    writable root and protected groups are refused. Groups that carry roles are not: each row
+    lists ``add_roles`` and ``remove_roles``, the realm roles (by name) and client roles
+    (``client:role``) the user gains and loses, inherited ones included. Show them to the
+    person approving; they are part of the digest.
     """
     return plan_changes(_kc(), _group_write_config(), changes, deadline=deadline_after(_group_deadline_seconds()))
 

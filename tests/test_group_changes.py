@@ -199,13 +199,32 @@ class TestPlan:
             ("/StaffOther/X", "outside"),  # segment-wise root check, not a string prefix
             ("/Staff", "outside"),  # the root itself is not a member group
             (PROTECTED, "protected"),
-            ("/Staff/Roleful/Child", "grants roles"),  # role inherited from an ancestor
             ("Staff/HQ", "invalid"),
         ],
     )
     def test_refused_targets(self, kc, cfg, path, needle):
         p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": path}])
         assert p["ok"] is False and needle in p["rows"][0]["status"]
+
+    def test_roles_are_reported_not_refused(self, kc, cfg):
+        # A group with roles (here inherited from an ancestor) can be planned; the roles the user
+        # gains are listed for the approver.
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}])
+        assert p["ok"] is True
+        assert p["rows"][0]["add_roles"] == ["admin"]
+
+    def test_client_roles_are_named_with_their_client(self, kc, cfg):
+        child = kc.groups["/Staff/Roleful/Child"]["id"]
+        kc.roles[child] = {"clientMappings": {"realm-management": {"mappings": [{"name": "realm-admin"}]}}}
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}])
+        assert p["rows"][0]["add_roles"] == ["admin", "realm-management:realm-admin"]
+
+    def test_roles_are_part_of_the_digest(self, kc, cfg):
+        changes = [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}]
+        d = plan_changes(kc, cfg, changes)["digest"]
+        kc.roles[kc.groups["/Staff/Roleful"]["id"]] = {"realmMappings": [{"name": "admin"}, {"name": "auditor"}]}
+        r = apply_changes(kc, cfg, changes, d)
+        assert r["applied"] == "no" and kc.writes == []
 
     def test_duplicate_user(self, kc, cfg):
         p = plan_changes(kc, cfg, [_swap()[0], dict(_swap()[0])])
@@ -384,7 +403,7 @@ class TestApply:
 
         kc.before_read_hook = hook
         r = apply_changes(kc, cfg, _swap(), d)
-        assert r["applied"] == "partial" and "no longer writable" in r["reason"]
+        assert r["applied"] == "partial" and "roles of '/Staff/HQ/Safety' changed" in r["reason"]
         assert ("add", "u-bob", safety) not in kc.writes
 
     def test_multi_mode_does_not_guess_a_replacing_server(self, kc, cfg):
@@ -496,7 +515,7 @@ class TestSingleMode:
 
         kc.before_read_hook = hook
         r = apply_changes(kc, single, [_swap()[0]], d)
-        assert r["applied"] == "no" and "no longer writable" in r["reason"] and kc.writes == []
+        assert r["applied"] == "no" and "roles of '/Staff/HQ/Safety' changed" in r["reason"] and kc.writes == []
 
     def test_early_refusal_has_manual_restore(self, kc, single):
         r = apply_changes(kc, single, [_swap()[0]], "wrong")
