@@ -80,6 +80,21 @@ CONFIG_EVENT_TYPES = (
 #: KeyCloak settings whose names contain a credential marker but which hold no secret.
 _NOT_SECRET = {"passwordPolicy", "requiredCredentials", "resetCredentialsFlow", "cibaBackchannelTokenDeliveryMode"}
 _NOT_SECRET_PREFIXES = ("webAuthnPolicyPasswordless",)
+#: Endings (normalized) of settings about tokens rather than tokens: algorithms, modes,
+#: formats, claims, lifespans.
+_TOKEN_SETTING_SUFFIXES = (
+    "alg",
+    "enc",
+    "mode",
+    "type",
+    "format",
+    "claim",
+    "claims",
+    "lifespan",
+    "lowercase",
+    "scope",
+    "enabled",
+)
 #: Fields that are secrets whatever they hold, even ``"false"`` (normalized suffixes).
 _ALWAYS_SECRET_SUFFIXES = ("password", "passwd", "secret", "credential", "privatekey", "apikey", "keystore")
 #: Keys left out everywhere: internal IDs and values that change by themselves.
@@ -152,10 +167,9 @@ def _holds_secret(key: str, value: Any) -> bool:
     if key in _NOT_SECRET or key.startswith(_NOT_SECRET_PREFIXES) or not looks_like_credential_key(key):
         return False
     flat = normalized(key)
-    if not looks_like_credential_key(flat.replace("token", "")) and not flat.endswith("token"):
-        # "token" inside a setting name (access.token.signed.response.alg,
-        # cibaBackchannelTokenDeliveryMode) names what the setting is about; only a key that
-        # ends in it (registrationAccessToken) holds one.
+    if not looks_like_credential_key(flat.replace("token", "")) and flat.endswith(_TOKEN_SETTING_SUFFIXES):
+        # A key that names a token only to say how it is issued (access.token.signed.response.alg,
+        # cibaBackchannelTokenDeliveryMode). Any other token-named string is treated as a token.
         return False
     strings = [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str) and v != ""]
     if not strings:
