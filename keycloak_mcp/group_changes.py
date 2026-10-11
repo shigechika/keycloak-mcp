@@ -67,7 +67,7 @@ class _Incomplete(Exception):
     """A membership list could not be read completely."""
 
 
-class _RolesUnknown(Exception):
+class RolesUnknown(Exception):
     """A group's roles cannot be read, so the role change of a row cannot be reported."""
 
 
@@ -163,14 +163,15 @@ def _remaining(deadline: float | None) -> float | None:
     return None if deadline is None else deadline - time.monotonic()
 
 
-class _Resolver:
-    """Resolve and vet group paths. One instance caches lookups for the life of one check."""
+class RoleResolver:
+    """Resolve group paths and the roles membership in them carries. One instance caches
+    lookups for the life of one check."""
 
-    def __init__(self, kc, cfg: GroupWriteConfig, deadline: float | None):
+    def __init__(self, kc, deadline: float | None):
         self.kc = kc
-        self.cfg = cfg
         self.deadline = deadline
         self._groups: dict[str, dict | None] = {}
+        self._by_id: dict[str, dict | None] = {}
         self._group_roles: dict[str, list[str]] = {}
         self._composites: dict[str, list[dict]] = {}
         self._client_names: dict[str, str] = {}
@@ -217,16 +218,49 @@ class _Resolver:
             self._group_roles[group_id] = sorted(names)
         return self._group_roles[group_id]
 
+    def roles_of(self, group: dict) -> list[str]:
+        """Roles a member of ``group`` (a representation read by ID) holds through it: its own
+        and every ancestor's, found through ``parentId`` so the lookup stays tied to the IDs
+        (a rename or move of a path cannot swap in another group). Falls back to the path
+        when the server does not return ``parentId``."""
+        if "parentId" not in group and group.get("path", "").count("/") > 1:
+            # No parentId: walk by path, but only if the path still names this group.
+            here = self.group(group["path"])
+            if here is None or here.get("id") != group.get("id"):
+                raise RolesUnknown(f"group '{group['path']}' no longer resolves to the same group")
+            return self.roles(group["path"])
+        names: set[str] = set()
+        seen: set[str] = set()
+        g: dict | None = group
+        while g is not None and g.get("id") not in seen:
+            seen.add(g["id"])
+            names.update(self._own_roles(g["id"]))
+            parent = g.get("parentId")
+            if not parent:
+                break
+            if parent not in self._by_id:
+                self._by_id[parent] = self.kc.get_group(parent, deadline=self.deadline)
+            g = self._by_id[parent]
+        return sorted(names)
+
     def roles(self, path: str) -> list[str]:
         """Roles a member of ``path`` holds through it: its own and every ancestor's (sorted).
-        Raises :class:`_RolesUnknown` when ``path`` or an ancestor does not resolve."""
+        Raises :class:`RolesUnknown` when ``path`` or an ancestor does not resolve."""
         names: set[str] = set()
         for anc in _ancestors(path):
             g = self.group(anc) if _valid_path(anc) else None
             if g is None:
-                raise _RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
+                raise RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
             names.update(self._own_roles(g["id"]))
         return sorted(names)
+
+
+class _Resolver(RoleResolver):
+    """:class:`RoleResolver` that also vets a path against the write configuration."""
+
+    def __init__(self, kc, cfg: GroupWriteConfig, deadline: float | None):
+        super().__init__(kc, deadline)
+        self.cfg = cfg
 
     def vet(self, path: str) -> tuple[dict | None, str]:
         """Resolve ``path`` and check it may be written. Returns ``(group, problem)``."""
@@ -470,7 +504,7 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
             if row["status"] in (OK, NO_OP):
                 try:
                     _role_impact(row, current, resolver)
-                except _RolesUnknown as exc:
+                except RolesUnknown as exc:
                     # A move whose role change cannot be shown is not offered for approval
                     row["status"] = str(exc)
             rows.append(row)

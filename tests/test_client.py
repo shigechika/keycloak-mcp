@@ -277,6 +277,17 @@ class TestGroupMembershipWrites:
         )
         assert KeyCloakClient().get_group_role_mappings("g1")["realmMappings"][0]["name"] == "r"
 
+    def test_get_group_by_id(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/groups/g1").mock(
+            return_value=httpx.Response(200, json={"id": "g1", "path": "/Staff/IT", "parentId": "g0"})
+        )
+        assert KeyCloakClient().get_group("g1")["parentId"] == "g0"
+
+    def test_deleted_group_by_id_raises(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/groups/gone").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().get_group("gone")
+
     def test_get_role_composites(self, mock_api):
         mock_api.get(f"{ADMIN_BASE}/roles-by-id/r1/composites").mock(
             return_value=httpx.Response(

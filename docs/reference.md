@@ -73,7 +73,9 @@ for a 09:00 morning run). A Configuration section lists admin events on roles,
 role mappings, flows, client scopes, protocol mappers, components and the realm,
 and, with `KEYCLOAK_STATE_DIR` set, what changed since the latest daily snapshot
 from an earlier day (both flagged `[CONFIG]`). The first brief of a day stores
-that day's snapshot; secrets are redacted before anything is stored. A backend connection failure renders the whole
+that day's snapshot; secrets are redacted before anything is stored. Additions to
+groups that carry roles are listed too, and flagged `[PRIVILEGE]` when the group grants
+a `realm-management` role other than the read-only `query-*`/`view-*`. A backend connection failure renders the whole
 report as `## CRITICAL — <ExceptionType>` rather than a partial brief with
 gaps unaccounted for.
 

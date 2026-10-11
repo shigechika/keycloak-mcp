@@ -73,7 +73,8 @@
 プロトコルマッパー・コンポーネント・realm への管理操作と、`KEYCLOAK_STATE_DIR` を
 設定していれば前日以前の最新のスナップショットからの変更を出します（どちらも
 `[CONFIG]`）。その日最初の brief がその日のスナップショットを保存します。秘密は
-保存する前に伏せます。
+保存する前に伏せます。ロールの付いたグループへの追加も出し、読み取り専用の `query-*`／`view-*` 以外の
+`realm-management` ロールが付くグループなら `[PRIVILEGE]` にします。
 
 `get_admin_events` と `get_user_attribute_history` は `max_repr` を受け取り、
 KeyCloak の「representation」ペイロード（変更されたオブジェクトの JSON テキスト）
