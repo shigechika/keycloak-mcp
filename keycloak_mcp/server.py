@@ -22,8 +22,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
 from . import __version__ as _version
+from . import config_snapshot
 from .client import DeadlineExceeded, KeyCloakClient, deadline_after, past_deadline
 from .group_changes import apply_changes, load_config, plan_changes
+from .redaction import looks_like_credential_key
 from .sites import SiteClassifier
 
 
@@ -148,27 +150,9 @@ def _user_attribute_whitelist() -> list[str]:
     return _split_csv(os.environ.get("KEYCLOAK_USER_ATTRIBUTE_WHITELIST", ""))
 
 
-#: Substrings (case-insensitive) that mark an attribute key as credential-shaped, so
-#: get_user refuses to print its value even if an operator whitelists it — a safety
-#: net for the common naming patterns, not a guarantee: a credential attribute named
-#: outside these patterns is not caught. Deliberately excludes bare "key" and "otp",
-#: which also match innocuous metadata keys (e.g. "totp_enabled").
-_CREDENTIAL_KEY_SUBSTRINGS = (
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "credential",
-    "private_key",
-    "api_key",
-    "apikey",
-)
-
-
-def _looks_like_credential_key(attribute_key: str) -> bool:
-    """True if `attribute_key` contains a credential-shaped substring (case-insensitive)."""
-    lowered = attribute_key.lower()
-    return any(marker in lowered for marker in _CREDENTIAL_KEY_SUBSTRINGS)
+#: get_user refuses to print a whitelisted attribute whose key looks credential-shaped.
+#: The markers are shared with the configuration snapshots (see :mod:`.redaction`).
+_looks_like_credential_key = looks_like_credential_key
 
 
 def _with_warning(text: str, truncated: bool) -> str:
@@ -2365,6 +2349,143 @@ def get_realm_security_defenses() -> str:
     return "\n".join(lines)
 
 
+def _state_dir() -> str | None:
+    """KEYCLOAK_STATE_DIR: where daily configuration snapshots are kept (unset = disabled)."""
+    return os.environ.get("KEYCLOAK_STATE_DIR", "").strip() or None
+
+
+def _local_today():
+    return datetime.now().date()
+
+
+@mcp.tool()
+def get_config_changes(baseline_date: str = "") -> str:
+    """Compare the realm configuration now with a stored daily snapshot (read-only).
+
+    Covers realm settings (brute force detection, password and OTP policies, session and
+    token lifespans, flow bindings), event settings, realm roles and the contents of
+    composite roles, authentication flows and their executions, required actions,
+    clients (redirect URIs, flows allowed, flow overrides, protocol mappers), client
+    scopes, default client scopes, components and, when readable, identity providers.
+    Values under credential-named keys (``secret``, ``password``, ``privateKey``,
+    ``apiKey``, ...) are replaced with ``<redacted>`` before anything is compared or stored,
+    so a changed secret does not show as a change.
+
+    The snapshots are written by ``daily_brief`` (the first run of each day); this tool
+    never writes one. Use it to see the full list when ``daily_brief`` reports [CONFIG]
+    changes, or to compare against an older day.
+
+    Args:
+        baseline_date: Snapshot to compare against (YYYY-MM-DD). Default: the latest
+            snapshot before today.
+    """
+    state = _state_dir()
+    if state is None:
+        return "Configuration snapshots are not enabled on this server (KEYCLOAK_STATE_DIR is not set)."
+    on = None
+    if baseline_date.strip():
+        try:
+            on = datetime.strptime(baseline_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return f"Invalid baseline_date '{baseline_date}' (expected YYYY-MM-DD)."
+    base = config_snapshot.load_baseline(state, _local_today(), on=on)
+    if base is None:
+        return (
+            f"No configuration snapshot for {on.isoformat()}."
+            if on
+            else "No configuration snapshot before today yet; daily_brief records the first one."
+        )
+    base_date, base_snap = base
+    try:
+        current = config_snapshot.collect(_kc(), deadline_after(_deadline_seconds()))
+    except config_snapshot.SnapshotIncomplete as exc:
+        return f"Configuration could not be read in full ({exc}); nothing was compared."
+    rows = config_snapshot.diff(base_snap, current)
+    lines = [f"Configuration changes since the snapshot of {base_date.isoformat()}: {len(rows)}"]
+    lines += config_snapshot.format_diff(rows, max_lines=None, value_limit=None) or ["- none"]
+    skipped = sorted(set(base_snap.get("unavailable", [])) | set(current.get("unavailable", [])))
+    if skipped:
+        lines.append(f"(not compared, not readable by this service account: {', '.join(skipped)})")
+    return "\n".join(lines)
+
+
+#: Most of daily_brief's shared deadline the configuration part may use; the rest is left
+#: for the login events the spray and brute-force checks need.
+_CONFIG_BUDGET_SECONDS = 15.0
+
+
+def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tuple[list[str], list[str]]:
+    """The configuration part of daily_brief: ``(warnings, section lines)``. Never raises.
+
+    Bounded by the brief's shared ``deadline`` and, within it, by
+    :data:`_CONFIG_BUDGET_SECONDS`. Admin events are read from ``date_from`` (a day) and
+    kept from ``since_ms`` on, so an event is reported in one brief, not two.
+    """
+    warnings: list[str] = []
+    lines = ["### Configuration"]
+    own = deadline_after(_CONFIG_BUDGET_SECONDS)
+    if deadline is not None:
+        deadline = min(deadline, own) if own is not None else deadline
+
+    try:
+        evts, evts_trunc = _kc().get_admin_events_all(
+            operation_types=["CREATE", "UPDATE", "DELETE", "ACTION"],
+            resource_types=list(config_snapshot.CONFIG_EVENT_TYPES),
+            date_from=date_from,
+            max_events=200,
+            deadline=deadline,
+        )
+        evts = [e for e in evts if int(e.get("time", 0)) >= since_ms]
+    except Exception as exc:
+        print(f"daily_brief config events: {type(exc).__name__}: {exc}", file=sys.stderr)
+        evts, evts_trunc = None, False
+        lines.append(f"- Configuration admin events could not be read ({type(exc).__name__})")
+
+    state = _state_dir()
+    if state is None:
+        lines.append("- Snapshots are not enabled (KEYCLOAK_STATE_DIR is not set); only admin events are shown")
+    else:
+        try:
+            today = _local_today()
+            current = config_snapshot.collect(_kc(), deadline)
+            base = config_snapshot.load_baseline(state, today)
+            written = config_snapshot.save_if_first_today(state, today, current)
+            if base is None:
+                lines.append("- Baseline recorded today; changes are reported from the next day")
+            else:
+                base_date, base_snap = base
+                rows = config_snapshot.diff(base_snap, current)
+                if rows:
+                    warnings.append(
+                        f"[CONFIG] {len(rows)} configuration item(s) changed since {base_date.isoformat()} "
+                        f"({', '.join(sorted({r['section'] for r in rows}))})"
+                    )
+                    lines.append(f"- Changed since the snapshot of {base_date.isoformat()}:")
+                    lines += ["  " + x for x in config_snapshot.format_diff(rows)]
+                else:
+                    lines.append(f"- No change since the snapshot of {base_date.isoformat()}")
+            if not written and base is not None:
+                lines.append("- (today's snapshot was already recorded; it is the baseline for tomorrow)")
+            skipped = set(current.get("unavailable", []))
+            if base is not None:
+                skipped |= set(base[1].get("unavailable", []))
+            if skipped:
+                lines.append(f"- Not compared (not readable then or now): {', '.join(sorted(skipped))}")
+        except config_snapshot.SnapshotIncomplete as exc:
+            warnings.append(f"[PARTIAL] configuration not compared ({exc}); the previous baseline is kept")
+        except Exception as exc:
+            print(f"daily_brief config: {type(exc).__name__}: {exc}", file=sys.stderr)
+            warnings.append(f"[CONFIG] configuration check failed ({type(exc).__name__}); see the server log")
+
+    if evts is not None:
+        if evts:
+            warnings.append(f"[CONFIG] {len(evts)} configuration admin event(s) (roles, flows, clients' scopes, realm)")
+        lines.append(f"- Configuration admin events: {len(evts)}" + (" (incomplete)" if evts_trunc else ""))
+        for e in evts[:10]:
+            lines.append(f"  - {_format_admin_event(e, max_repr=0)}")
+    return warnings, lines
+
+
 @mcp.tool()
 def daily_brief(
     since_hours: int = 18,
@@ -2377,6 +2498,10 @@ def daily_brief(
     - Active sessions by client
     - Password update events
     - Admin events (CREATE/UPDATE/DELETE on USER/CLIENT resources)
+    - Configuration: admin events that change roles, role mappings, flows, client
+      scopes, protocol mappers, components or the realm, and (when KEYCLOAK_STATE_DIR is
+      set) what changed since the last daily snapshot. The first run of each day records
+      that day's snapshot; ``get_config_changes`` lists every change.
 
     A single IP with login failures >= ``ip_failure_threshold`` is flagged
     as WARNING (possible brute-force). Independently, the same login events
@@ -2407,6 +2532,10 @@ def daily_brief(
     # reports a lower bound).
     deadline = deadline_after(_deadline_seconds())
     cap = _max_events()
+    since_ms = int((datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000)
+    # The configuration check runs first, capped at _CONFIG_BUDGET_SECONDS of the shared
+    # deadline: the event reads that follow cannot starve it, and it cannot starve them.
+    config_warnings, config_lines = _config_brief(date_from, since_ms, deadline)
     try:
         success, failure, login_trunc = _fetch_login_events(date_from=date_from, deadline=deadline)
         pw_updates, pw_trunc = _kc().get_events_all(
@@ -2445,7 +2574,7 @@ def daily_brief(
     spray = _spray_analysis(
         success,
         failure,
-        since_ms=int((datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000),
+        since_ms=since_ms,
         min_users=10,
         max_success_rate=0.2,
         min_report_users=3,
@@ -2470,6 +2599,7 @@ def daily_brief(
             "[PARTIAL] event data incomplete — the look-back window exceeded the time/size budget; "
             "counts are a lower bound (narrow since_hours or raise KEYCLOAK_DEADLINE)"
         )
+    warnings += config_warnings
 
     total_sessions = sum(int(s.get("active", 0)) for s in session_stats)
 
@@ -2554,6 +2684,8 @@ def daily_brief(
     if admin_evts:
         for e in admin_evts[:10]:
             lines.append(f"- {_format_admin_event(e, max_repr=0)}")
+    lines.append("")
+    lines += config_lines
 
     return "\n".join(lines)
 

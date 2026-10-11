@@ -45,6 +45,7 @@ Authenticates via a Service Account (**Client Credentials Grant**), so no human 
 |------|-------------|
 | `get_brute_force_status` | Whether a user is currently locked by brute-force detection |
 | `get_realm_security_defenses` | Realm-level security policy: whether brute-force detection is enabled and its thresholds, the password policy, and browser security headers |
+| `get_config_changes` | What changed in the realm configuration since a stored daily snapshot (see *Configuration snapshots*). Read-only; `baseline_date` picks an older snapshot. |
 | `get_login_failures_by_ip` | Failure breakdown by source IP (site-labeled when `KEYCLOAK_SITES_INI` is set) |
 | `get_ip_activity` | Exhaustive investigation of one source IP: success/failure counts, affected users/clients, timeline. Returns structured JSON. |
 | `spray_check` | Password-spray detection with the breach list built in: every external IP with ≥ 10 distinct users and < 20 % login success is a spray source, and its successful logins (evidence tuple `time / ip / username / user_id / client_id`) are the breach candidates. Each row carries a `confidence`: `high` is a breach verdict; `low` means the volume rule fired on a shared egress (school NAT, home line, VDI) — signalled by `user_success_rate` (distinct users that logged in ÷ distinct users, ≥ 0.2), `failure_concentration` (share of failures on one username, ≥ 0.5) or a `KEYCLOAK_KNOWN_EGRESS` match — and the logins are to be verified with the owner, not published. `top_failed_users` and `not_found_domains` show who kept failing and which mistyped domains produced `user_not_found`. Fixed-shape JSON, `complete: false` when the window was truncated. |
@@ -86,7 +87,7 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 | Tool | Description |
 |------|-------------|
 | `health_check` | Report the running server version and verify the KeyCloak backend is reachable and the service account can authenticate. Lightweight (one token request; no user/event/session scans). Returns a fixed-shape dict with `status`, `auth`, and the configured URL/realm. The tool's own description enumerates the values those fields can take, and is the one place that does. |
-| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, spray check (same rule as `spray_check`, with breached accounts and evidence), active sessions, password updates, and admin events in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) and spray sources are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
+| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, spray check (same rule as `spray_check`, with breached accounts and evidence), active sessions, password updates, admin events, and configuration changes (admin events on roles, role mappings, flows, client scopes, protocol mappers, components and the realm, plus the snapshot comparison when `KEYCLOAK_STATE_DIR` is set; both are flagged `[CONFIG]`) in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) and spray sources are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
 
 ## Setup
 
@@ -130,6 +131,7 @@ pip install -e .
 | `KEYCLOAK_PROTECTED_GROUPS` | `;`-separated full group paths that the group-change tools refuse to add to or remove from (descendants included). A malformed entry disables the group-change tools rather than silently dropping the protection. | *unset* |
 | `KEYCLOAK_GROUP_BATCH_MAX` | Maximum rows per group-change call. | `30` |
 | `KEYCLOAK_GROUP_MODE` | `multi` (KeyCloak's default: a user can be in many groups) or `single` for a deployment where adding a group replaces every other membership (for example an event listener that keeps one group per user). Any other value disables the group tools. See *Group changes*. | `multi` |
+| `KEYCLOAK_STATE_DIR` | Directory for the daily configuration snapshots (`<dir>/config-snapshots`, created 0700, files 0600). Unset: no snapshots; `daily_brief` still reports configuration admin events. See *Configuration snapshots*. | *unset* |
 | `KEYCLOAK_GROUP_DEADLINE` | Time budget (seconds) for the group-change tools. A batch of 30 users needs more than the default 45 s; raise it where nothing with a ~60 s timeout sits in front of the server (for example a client that spawns it directly). Unset: `KEYCLOAK_DEADLINE`. | *unset* |
 
 ### KeyCloak client setup
@@ -226,6 +228,35 @@ Writes need `manage-users`. Depending on the KeyCloak version, reading groups an
 role mappings may also need `query-groups`. Expanding composite roles reads realm roles
 (`view-realm`) and naming client roles reads clients (`view-clients`). Run
 `plan_group_changes` once to confirm.
+
+### Configuration snapshots (optional)
+
+With `KEYCLOAK_STATE_DIR` set, the first `daily_brief` of each day stores a snapshot of the
+realm configuration, and every `daily_brief` compares the current configuration with the
+latest snapshot from an earlier day. Changes are a `[CONFIG]` warning with the changed
+fields; `get_config_changes` lists all of them.
+
+- Covered: realm settings (brute-force detection, password and OTP policies, session and
+  token lifespans, flow bindings), event settings, realm roles and what each composite role
+  contains, authentication flows and their executions, required actions, clients (redirect
+  URIs, allowed flows, flow overrides, attributes, protocol mappers), client scopes,
+  default client scopes, components, and identity providers when the service account may
+  read them. Group role mappings and client roles are not in the snapshot; their admin
+  events are reported instead.
+- Secrets are not stored: string values under keys containing `secret`, `password`,
+  `privateKey`, `apiKey`, `credential`, `token` and similar (the markers `get_user` also
+  uses) are replaced with `<redacted>`, so a changed secret does not show as a change.
+  `true`/`false` and numbers under such keys are settings and stay visible, except under
+  a field that is itself a secret (`...password`, `...secret`). This is a safety net for
+  the common names, not a guarantee. Long values (certificates, public keys) are stored
+  as a hash.
+- Only a complete read is stored. When the time budget runs out, the brief says the
+  comparison was skipped and the previous baseline stays.
+- Snapshots are written only by `daily_brief`, and only the first one of a day, so a change
+  made during the day is reported again the next morning. The last 30 are kept.
+- Reading the configuration needs `view-realm` and `view-clients`; identity providers
+  also need `view-identity-providers`. Without it that section is left out of the
+  comparison and the brief says so.
 
 ### Verify your setup
 

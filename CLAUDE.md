@@ -6,7 +6,7 @@ MCP server for the KeyCloak Admin REST API. Authenticates as a Service
 Account (OIDC Client Credentials Grant — no human password or TOTP);
 never calls the `userinfo` endpoint and never creates user sessions
 (the project describes this as "Infinispan-safe" — see README.md).
-Exposes 32 tools (users, MFA/credentials, groups, brute-force/security,
+Exposes 33 tools (users, MFA/credentials, groups, brute-force/security,
 events, admin events, sessions/clients, and a `daily_brief` morning
 report) over stdio transport, plus two opt-in group-change tools
 (`plan_group_changes`, `apply_group_changes`) registered only when
@@ -56,6 +56,10 @@ exist), `KEYCLOAK_GROUP_BATCH_MAX` (default 30), `KEYCLOAK_GROUP_MODE` (`multi` 
 `single` = adding replaces every other membership, no DELETE sent), `KEYCLOAK_GROUP_DEADLINE`
 (default `KEYCLOAK_DEADLINE`). The digest is a staleness check, not an approval
 token; the approval gate belongs to the client.
+Configuration snapshots (`keycloak_mcp/config_snapshot.py`): `KEYCLOAK_STATE_DIR`
+(unset = none). Only `daily_brief` writes (first run of a day, complete reads only);
+`get_config_changes` compares and never writes. Secret-named string values are redacted
+before storing.
 `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` (default unset, comma-separated attribute
 keys) opts specific custom user attributes into `get_user`'s output — unset,
 `get_user` never fetches or surfaces `attributes` at all (see
