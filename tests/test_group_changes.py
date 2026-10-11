@@ -62,6 +62,12 @@ class FakeKC:
     def get_group_role_mappings(self, gid, deadline=None):
         return self.roles.get(gid, {})
 
+    def get_role_composites(self, role_id, deadline=None):
+        return getattr(self, "composites", {}).get(role_id, [])
+
+    def get_client(self, client_id, deadline=None):
+        return getattr(self, "clients", {}).get(client_id, {})
+
     def get_user_by_username(self, username, deadline=None):
         if self.username_override:
             return self.users.get(self.username_override)
@@ -199,13 +205,79 @@ class TestPlan:
             ("/StaffOther/X", "outside"),  # segment-wise root check, not a string prefix
             ("/Staff", "outside"),  # the root itself is not a member group
             (PROTECTED, "protected"),
-            ("/Staff/Roleful/Child", "grants roles"),  # role inherited from an ancestor
             ("Staff/HQ", "invalid"),
         ],
     )
     def test_refused_targets(self, kc, cfg, path, needle):
         p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": path}])
         assert p["ok"] is False and needle in p["rows"][0]["status"]
+
+    def test_roles_are_reported_not_refused(self, kc, cfg):
+        # A group with roles (here inherited from an ancestor) can be planned; the roles the user
+        # gains are listed for the approver.
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}])
+        assert p["ok"] is True
+        assert p["rows"][0]["add_roles"] == ["admin"]
+
+    def test_client_roles_are_named_with_their_client(self, kc, cfg):
+        child = kc.groups["/Staff/Roleful/Child"]["id"]
+        kc.roles[child] = {"clientMappings": {"realm-management": {"mappings": [{"name": "realm-admin"}]}}}
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}])
+        assert p["rows"][0]["add_roles"] == ["admin", "realm-management:realm-admin"]
+
+    def test_roles_are_part_of_the_digest(self, kc, cfg):
+        changes = [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}]
+        d = plan_changes(kc, cfg, changes)["digest"]
+        kc.roles[kc.groups["/Staff/Roleful"]["id"]] = {"realmMappings": [{"name": "admin"}, {"name": "auditor"}]}
+        r = apply_changes(kc, cfg, changes, d)
+        assert r["applied"] == "no" and kc.writes == []
+
+    def test_composite_roles_are_expanded(self, kc, cfg):
+        roleful = kc.groups["/Staff/Roleful"]["id"]
+        kc.roles[roleful] = {"realmMappings": [{"id": "r-dept", "name": "dept-admin", "composite": True}]}
+        kc.composites = {
+            "r-dept": [{"id": "r-common", "name": "common", "composite": True}],
+            "r-common": [{"id": "r-ra", "name": "realm-admin", "clientRole": True, "containerId": "c-rm"}],
+        }
+        kc.clients = {"c-rm": {"clientId": "realm-management"}}
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}])
+        assert p["rows"][0]["add_roles"] == ["common", "dept-admin", "realm-management:realm-admin"]
+
+    def test_role_added_to_a_composite_after_the_plan_changes_the_digest(self, kc, cfg):
+        roleful = kc.groups["/Staff/Roleful"]["id"]
+        kc.roles[roleful] = {"realmMappings": [{"id": "r-dept", "name": "dept-admin", "composite": True}]}
+        kc.composites = {"r-dept": []}
+        changes = [{"username": "alice", "remove": None, "add": "/Staff/Roleful/Child"}]
+        d = plan_changes(kc, cfg, changes)["digest"]
+        kc.composites = {"r-dept": [{"id": "r-x", "name": "superpower"}]}
+        r = apply_changes(kc, cfg, changes, d)
+        assert r["applied"] == "no" and kc.writes == []
+
+    def test_gains_and_losses_are_the_net_change(self, kc, cfg):
+        hq = kc.groups["/Staff/HQ"]["id"]
+        safety = kc.groups["/Staff/HQ/Safety"]["id"]
+        kc.roles[hq] = {"realmMappings": [{"name": "hq-staff"}]}
+        kc.roles[safety] = {"realmMappings": [{"name": "safety-officer"}]}
+        # alice: Safety -> General, both under /Staff/HQ: keeps hq-staff, loses safety-officer
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": "/Staff/HQ/Safety", "add": "/Staff/HQ/General"}])
+        row = p["rows"][0]
+        assert row["add_roles"] == ["hq-staff"] and row["remove_roles"] == ["hq-staff", "safety-officer"]
+        assert row["gained_roles"] == [] and row["lost_roles"] == ["safety-officer"]
+
+    def test_no_op_row_gains_and_loses_nothing(self, kc, cfg):
+        kc.roles[kc.groups["/Staff/HQ/Safety"]["id"]] = {"realmMappings": [{"name": "safety-officer"}]}
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/HQ/Safety"}])
+        row = p["rows"][0]
+        assert row["status"] == "no-op" and row["gained_roles"] == [] and row["lost_roles"] == []
+
+    def test_current_group_whose_roles_cannot_be_read_stops_the_row(self, kc, cfg):
+        # A group named with a '/' cannot be looked up by path, so its roles are unknown and
+        # the role change of the move cannot be shown: the row is refused, nothing raises.
+        kc.groups["(slash)"] = {"id": "g-slash", "path": "/Legacy/a/b", "name": "a/b"}
+        kc.members["u-alice"].add("g-slash")
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/HQ/General"}])
+        assert p["ok"] is False and p["digest"] is None
+        assert "cannot read the roles of group '/Legacy/a/b'" in p["rows"][0]["status"]
 
     def test_duplicate_user(self, kc, cfg):
         p = plan_changes(kc, cfg, [_swap()[0], dict(_swap()[0])])
@@ -349,8 +421,10 @@ class TestApply:
         kc.get_group_role_mappings = counting
         r = apply_changes(kc, cfg, changes, d)
         assert r["applied"] == "yes"
-        # re-plan vets once (cached), then one fresh re-vet for the first add only: 2 x 3 ancestors
-        assert calls["n"] == 6
+        # re-plan: the destination's 3 ancestors once (cached), plus alice's current group for the
+        # role impact (/Staff/HQ and /Staff/HQ/Safety; /Staff is cached) = 5; then one fresh re-vet
+        # of the destination for the first add only = 3
+        assert calls["n"] == 8
 
     def test_reserve_is_checked_again_after_pre_write_reads(self, kc, cfg, monkeypatch):
         from keycloak_mcp import group_changes
@@ -384,7 +458,7 @@ class TestApply:
 
         kc.before_read_hook = hook
         r = apply_changes(kc, cfg, _swap(), d)
-        assert r["applied"] == "partial" and "no longer writable" in r["reason"]
+        assert r["applied"] == "partial" and "roles of '/Staff/HQ/Safety' changed" in r["reason"]
         assert ("add", "u-bob", safety) not in kc.writes
 
     def test_multi_mode_does_not_guess_a_replacing_server(self, kc, cfg):
@@ -496,7 +570,7 @@ class TestSingleMode:
 
         kc.before_read_hook = hook
         r = apply_changes(kc, single, [_swap()[0]], d)
-        assert r["applied"] == "no" and "no longer writable" in r["reason"] and kc.writes == []
+        assert r["applied"] == "no" and "roles of '/Staff/HQ/Safety' changed" in r["reason"] and kc.writes == []
 
     def test_early_refusal_has_manual_restore(self, kc, single):
         r = apply_changes(kc, single, [_swap()[0]], "wrong")

@@ -277,6 +277,30 @@ class TestGroupMembershipWrites:
         )
         assert KeyCloakClient().get_group_role_mappings("g1")["realmMappings"][0]["name"] == "r"
 
+    def test_get_role_composites(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/roles-by-id/r1/composites").mock(
+            return_value=httpx.Response(
+                200, json=[{"id": "r2", "name": "child", "clientRole": True, "containerId": "c1"}]
+            )
+        )
+        assert KeyCloakClient().get_role_composites("r1")[0]["containerId"] == "c1"
+
+    def test_role_without_composites(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/roles-by-id/r1/composites").mock(return_value=httpx.Response(200, json=[]))
+        assert KeyCloakClient().get_role_composites("r1") == []
+
+    def test_composites_of_a_deleted_role_raise(self, mock_api):
+        # A role deleted after the mapping was read must stop the plan, not read as "no roles".
+        mock_api.get(f"{ADMIN_BASE}/roles-by-id/gone/composites").mock(return_value=httpx.Response(404))
+        with pytest.raises(httpx.HTTPStatusError):
+            KeyCloakClient().get_role_composites("gone")
+
+    def test_get_client_by_internal_id(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/clients/c1").mock(
+            return_value=httpx.Response(200, json={"id": "c1", "clientId": "realm-management"})
+        )
+        assert KeyCloakClient().get_client("c1")["clientId"] == "realm-management"
+
 
 class TestGetGroupChildrenAll:
     def test_pagination(self, mock_api):

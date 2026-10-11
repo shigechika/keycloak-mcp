@@ -164,7 +164,7 @@ deployment that shares the binary without an approval step never exposes them.
 
 | Tool | Admin API call |
 |---|---|
-| `plan_group_changes` | read-only: `GET /users?username=...&exact=true`, `GET /group-by-path/...`, `GET /groups/{id}/role-mappings`, `GET /users/{id}/groups` |
+| `plan_group_changes` | read-only: `GET /users?username=...&exact=true`, `GET /group-by-path/...`, `GET /groups/{id}/role-mappings`, `GET /roles-by-id/{id}/composites`, `GET /clients/{id}`, `GET /users/{id}/groups` |
 | `apply_group_changes` | `PUT /users/{id}/groups/{groupId}` then `DELETE /users/{id}/groups/{groupId}` |
 
 - `plan_group_changes` resolves every user and group by exact name/path and returns, per
@@ -189,15 +189,29 @@ deployment that shares the binary without an approval step never exposes them.
   Set it when your KeyCloak behaves this way; in `multi` mode such a server makes every
   move stop as a concurrent change, and in `single` mode a server that keeps the old group
   makes the move stop with a message that the mode does not match.
-- Refused targets: anything outside the root, the root itself, protected groups and their
-  descendants, and any group that carries realm or client role mappings directly or
-  through an ancestor.
-- No role mappings does not mean no privilege. A group can grant access through
-  membership alone (a SAML/OIDC group mapper that a service provider checks, or an
-  authorization-services group policy). List every such group in
-  `KEYCLOAK_PROTECTED_GROUPS`; the role check cannot see them. Every protected path must
-  exist in KeyCloak: if one does not resolve (renamed, moved, different case), every plan
-  is refused until the configuration is fixed.
+- Refused targets: anything outside the root, the root itself, and protected groups and
+  their descendants.
+- A group that carries roles is not refused: moving someone into a department's admin
+  group is an ordinary transfer when the approver can do the same in the admin console.
+  Each plan row lists `gained_roles` and `lost_roles`: the difference the move makes to the
+  roles the user holds through all their group memberships (a role kept through a shared
+  ancestor or another group is neither; roles mapped to the user directly are not read).
+  `add_roles` and `remove_roles` are the roles membership in each named group carries.
+  Realm roles appear by name and client roles as `client:role`; roles inherited from
+  ancestor groups and the contents of composite roles (any depth) are included. Show the
+  gains and losses to the person approving. They are part of the `digest`, and the
+  destination's roles are read again before each add (at most once every 5 seconds per
+  group within one call), so a role attached (or added to a composite) after the approval
+  stops the run. A row whose role change cannot be
+  shown (a current group that does not resolve by path, such as one with `/` in its name)
+  is refused.
+  Changed in 1.3.0: earlier versions refused any group with role mappings. If you relied on
+  that, list those groups in `KEYCLOAK_PROTECTED_GROUPS` before upgrading.
+- Membership can grant access without any role (a SAML/OIDC group mapper that a service
+  provider checks, an authorization-services group policy). List the groups that must
+  never be written by these tools, whatever their roles, in `KEYCLOAK_PROTECTED_GROUPS`.
+  Every protected path must exist in KeyCloak: if one does not resolve (renamed, moved,
+  different case), every plan is refused until the configuration is fixed.
 - The `digest` shows that nothing changed since the plan. It does not prove that a person
   approved the plan: any caller of `plan_group_changes` gets a valid digest. Put the
   approval in front of `apply_group_changes`, for example a client that keeps the digest
@@ -209,7 +223,9 @@ deployment that shares the binary without an approval step never exposes them.
   membership does not undo access that happened while it was wrong.
 
 Writes need `manage-users`. Depending on the KeyCloak version, reading groups and their
-role mappings may also need `query-groups`; run `plan_group_changes` once to confirm.
+role mappings may also need `query-groups`. Expanding composite roles reads realm roles
+(`view-realm`) and naming client roles reads clients (`view-clients`). Run
+`plan_group_changes` once to confirm.
 
 ### Verify your setup
 

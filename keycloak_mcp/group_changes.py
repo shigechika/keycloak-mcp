@@ -17,12 +17,21 @@ client that holds the digest itself and asks a person before calling ``apply``).
 The write path is opt-in: the tools are registered only when
 ``KEYCLOAK_GROUP_WRITE_ROOT`` is set (see :func:`load_config`), so a deployment that shares
 this binary without that variable (for example a gateway with no approval step) never
-exposes them. Writes are confined to groups under that root that carry no realm or client
-role mappings (on the group or any ancestor) and are not listed in
-``KEYCLOAK_PROTECTED_GROUPS``. A group without role mappings can still grant access:
-applications that read group membership (SAML/OIDC group mappers checked by a service
-provider, authorization-services group policies) treat membership itself as a permission.
-Every such group must be listed as protected; the role check cannot see them.
+exposes them. Writes are confined to groups under that root that are not listed in
+``KEYCLOAK_PROTECTED_GROUPS``.
+
+Moving someone into a group can grant privileges: realm and client roles mapped to the
+group or any ancestor (and everything those roles contain when they are composite), and
+access that applications derive from membership itself (SAML/OIDC group mappers,
+authorization-services group policies). The plan does not refuse such groups; it reports
+them so that the person approving sees them. Per row, ``add_roles`` / ``remove_roles`` are
+the roles membership in that group carries, and ``gained_roles`` / ``lost_roles`` are the
+difference the move makes to what the user holds through all their group memberships
+(roles mapped to the user directly are not read). Roles are expanded through composites
+and inherited from ancestors. They are part of the digest, and the destination's roles are
+read again before each add, so a role attached (or added to a composite) after the approval
+stops the run. Groups that must never be written, whatever their roles, belong in
+``KEYCLOAK_PROTECTED_GROUPS``.
 
 Restoring a membership does not undo what happened while it was wrong (sessions, tokens,
 mail). The reverse changes returned by :func:`apply_changes` are a proposal for a human to
@@ -40,7 +49,7 @@ from typing import Any
 
 from .client import DeadlineExceeded
 
-DIGEST_VERSION = 1
+DIGEST_VERSION = 2
 BATCH_MAX_DEFAULT = 30
 # A write is not started with less than this much of the budget left, so the read-back
 # that confirms it still fits.
@@ -56,6 +65,10 @@ NO_OP = "no-op"
 
 class _Incomplete(Exception):
     """A membership list could not be read completely."""
+
+
+class _RolesUnknown(Exception):
+    """A group's roles cannot be read, so the role change of a row cannot be reported."""
 
 
 class _OutOfTime(_Incomplete):
@@ -158,7 +171,9 @@ class _Resolver:
         self.cfg = cfg
         self.deadline = deadline
         self._groups: dict[str, dict | None] = {}
-        self._has_roles: dict[str, bool] = {}
+        self._group_roles: dict[str, list[str]] = {}
+        self._composites: dict[str, list[dict]] = {}
+        self._client_names: dict[str, str] = {}
 
     def group(self, path: str) -> dict | None:
         """The group at exactly ``path`` (the returned ``path`` must match), else ``None``."""
@@ -167,11 +182,51 @@ class _Resolver:
             self._groups[path] = g if isinstance(g, dict) and g.get("path") == path and g.get("id") else None
         return self._groups[path]
 
-    def _carries_roles(self, group_id: str) -> bool:
-        if group_id not in self._has_roles:
+    def _label(self, role: dict, client: str | None = None) -> str:
+        """A realm role by name, a client role as ``clientId:role``."""
+        if not role.get("clientRole") and client is None:
+            return role.get("name", "")
+        if client is None:
+            cid = role.get("containerId", "")
+            if cid not in self._client_names:
+                rep = self.kc.get_client(cid, deadline=self.deadline) or {}
+                self._client_names[cid] = rep.get("clientId") or cid
+            client = self._client_names[cid]
+        return f"{client}:{role.get('name', '')}"
+
+    def _own_roles(self, group_id: str) -> list[str]:
+        """Roles the group itself grants, expanded through composite roles (any depth)."""
+        if group_id not in self._group_roles:
             rm = self.kc.get_group_role_mappings(group_id, deadline=self.deadline) or {}
-            self._has_roles[group_id] = bool(rm.get("realmMappings")) or bool(rm.get("clientMappings"))
-        return self._has_roles[group_id]
+            todo: list[tuple[dict, str | None]] = [(r, None) for r in rm.get("realmMappings") or []]
+            for client, v in (rm.get("clientMappings") or {}).items():
+                todo += [(r, client) for r in (v or {}).get("mappings") or []]
+            names: set[str] = set()
+            while todo:
+                role, client = todo.pop()
+                label = self._label(role, client)
+                if label in names:
+                    continue
+                names.add(label)
+                if role.get("composite") and role.get("id"):
+                    if role["id"] not in self._composites:
+                        self._composites[role["id"]] = (
+                            self.kc.get_role_composites(role["id"], deadline=self.deadline) or []
+                        )
+                    todo += [(r, None) for r in self._composites[role["id"]]]
+            self._group_roles[group_id] = sorted(names)
+        return self._group_roles[group_id]
+
+    def roles(self, path: str) -> list[str]:
+        """Roles a member of ``path`` holds through it: its own and every ancestor's (sorted).
+        Raises :class:`_RolesUnknown` when ``path`` or an ancestor does not resolve."""
+        names: set[str] = set()
+        for anc in _ancestors(path):
+            g = self.group(anc) if _valid_path(anc) else None
+            if g is None:
+                raise _RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
+            names.update(self._own_roles(g["id"]))
+        return sorted(names)
 
     def vet(self, path: str) -> tuple[dict | None, str]:
         """Resolve ``path`` and check it may be written. Returns ``(group, problem)``."""
@@ -185,13 +240,10 @@ class _Resolver:
         g = self.group(path)
         if g is None:
             return None, f"group '{path}' not found"
-        # Members of a subgroup inherit the roles of every ancestor group, so check them all.
+        # Members inherit the roles of every ancestor, which roles() reads, so they must resolve.
         for anc in _ancestors(path):
-            ag = self.group(anc)
-            if ag is None:
+            if self.group(anc) is None:
                 return None, f"ancestor group '{anc}' not found"
-            if self._carries_roles(ag["id"]):
-                return None, f"'{path}' grants roles (via '{anc}'); not writable here"
         return g, ""
 
 
@@ -242,6 +294,10 @@ def _digest(cfg: GroupWriteConfig, rows: list[dict]) -> str:
                 "user_id": r.get("user_id"),
                 "remove": [r.get("remove"), r.get("remove_id")],
                 "add": [r.get("add"), r.get("add_id")],
+                "add_roles": r.get("add_roles", []),
+                "remove_roles": r.get("remove_roles", []),
+                "gained_roles": r.get("gained_roles", []),
+                "lost_roles": r.get("lost_roles", []),
                 "current": sorted(r.get("current_ids", [])),
                 "ops": r.get("ops", []),
                 "status": r["status"],
@@ -304,10 +360,34 @@ def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
             row["status"] = f"the move would also leave a group that is not writable: {why}"
             return
         row["remove"], row["remove_id"] = left_path, left_id
+        row["remove_roles"] = resolver.roles(left_path)
     row["replaced"] = [row["remove"]] if row["remove"] else []
     row["ops"] = ["add"]
     row["status"] = OK
     row["after_ids"] = [row["add_id"]]
+
+
+def _role_impact(row: dict, current: list[dict], resolver: _Resolver) -> None:
+    """``gained_roles`` / ``lost_roles``: what the user holds through their groups after the
+    move minus before, and the reverse. A role kept through a shared ancestor or another
+    membership is neither. Nothing changes for a no-op row."""
+    paths = {g["id"]: g.get("path", "") for g in current}
+    if row.get("add_id"):
+        paths[row["add_id"]] = row["add"]
+    if row.get("remove_id"):
+        paths[row["remove_id"]] = row["remove"]
+    after_ids = row["after_ids"]
+
+    def held(ids) -> set[str]:
+        out: set[str] = set()
+        for gid in ids:
+            if paths.get(gid):
+                out.update(resolver.roles(paths[gid]))
+        return out
+
+    before, after = held(row.get("current_ids", [])), held(after_ids)
+    row["gained_roles"] = sorted(after - before)
+    row["lost_roles"] = sorted(before - after)
 
 
 def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None = None) -> dict[str, Any]:
@@ -368,6 +448,7 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
                         problems.append(why)
                     else:
                         row[f"{side}_id"] = g["id"]
+                        row[f"{side}_roles"] = resolver.roles(row[side])
             user = kc.get_user_by_username(norm["username"], deadline=deadline)
             if not user:
                 problems.append(f"user '{norm['username']}' not found")
@@ -386,6 +467,12 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
                 _decide_single(row, current, resolver)
             else:
                 _decide(row)
+            if row["status"] in (OK, NO_OP):
+                try:
+                    _role_impact(row, current, resolver)
+                except _RolesUnknown as exc:
+                    # A move whose role change cannot be shown is not offered for approval
+                    row["status"] = str(exc)
             rows.append(row)
     except (_OutOfTime, DeadlineExceeded) as exc:
         return {
@@ -512,16 +599,20 @@ def apply_changes(
             try:
                 # A role or a new path may have been attached since the plan: vet again, with no
                 # cache, the destination of an add and, in single mode, the group it will leave
-                # (at most once per REVET_TTL_SECONDS per group in one call).
-                to_vet = [(path, gid)] if op == "add" else []
+                # (at most once per REVET_TTL_SECONDS per group in one call). The roles must still
+                # be the ones the approver saw.
+                to_vet = [(path, gid, row.get("add_roles", []))] if op == "add" else []
                 if op == "add" and cfg.mode == "single" and row.get("remove"):
-                    to_vet.append((row["remove"], row["remove_id"]))
-                for vpath, vid in to_vet:
+                    to_vet.append((row["remove"], row["remove_id"], row.get("remove_roles", [])))
+                for vpath, vid, vroles in to_vet:
                     if time.monotonic() - vetted_at.get(vpath, float("-inf")) <= REVET_TTL_SECONDS:
                         continue
-                    g, why = _Resolver(kc, cfg, deadline).vet(vpath)
+                    fresh = _Resolver(kc, cfg, deadline)
+                    g, why = fresh.vet(vpath)
                     if g is None or g["id"] != vid:
                         return _stop(record, f"stopped: '{vpath}' is no longer writable: {why or 'group id changed'}")
+                    if fresh.roles(vpath) != vroles:
+                        return _stop(record, f"stopped: the roles of '{vpath}' changed since the plan")
                     vetted_at[vpath] = time.monotonic()
                 # Read fresh before every write, even right after a read-back: someone may undo
                 # the add between it and the remove, and removing then would leave the user in
