@@ -67,6 +67,10 @@ class _Incomplete(Exception):
     """A membership list could not be read completely."""
 
 
+class _RolesUnknown(Exception):
+    """A group's roles cannot be read, so the role change of a row cannot be reported."""
+
+
 class _OutOfTime(_Incomplete):
     """The time budget ran out."""
 
@@ -215,10 +219,13 @@ class _Resolver:
 
     def roles(self, path: str) -> list[str]:
         """Roles a member of ``path`` holds through it: its own and every ancestor's (sorted).
-        Call after :meth:`vet` succeeded for ``path``."""
+        Raises :class:`_RolesUnknown` when ``path`` or an ancestor does not resolve."""
         names: set[str] = set()
         for anc in _ancestors(path):
-            names.update(self._own_roles(self.group(anc)["id"]))
+            g = self.group(anc) if _valid_path(anc) else None
+            if g is None:
+                raise _RolesUnknown(f"cannot read the roles of group '{path}' ('{anc}' does not resolve)")
+            names.update(self._own_roles(g["id"]))
         return sorted(names)
 
     def vet(self, path: str) -> tuple[dict | None, str]:
@@ -369,7 +376,7 @@ def _role_impact(row: dict, current: list[dict], resolver: _Resolver) -> None:
         paths[row["add_id"]] = row["add"]
     if row.get("remove_id"):
         paths[row["remove_id"]] = row["remove"]
-    after_ids = row.get("after_ids", sorted(paths))
+    after_ids = row["after_ids"]
 
     def held(ids) -> set[str]:
         out: set[str] = set()
@@ -461,7 +468,11 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
             else:
                 _decide(row)
             if row["status"] in (OK, NO_OP):
-                _role_impact(row, current, resolver)
+                try:
+                    _role_impact(row, current, resolver)
+                except _RolesUnknown as exc:
+                    # A move whose role change cannot be shown is not offered for approval
+                    row["status"] = str(exc)
             rows.append(row)
     except (_OutOfTime, DeadlineExceeded) as exc:
         return {

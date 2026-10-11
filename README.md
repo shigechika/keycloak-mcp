@@ -201,7 +201,11 @@ deployment that shares the binary without an approval step never exposes them.
   ancestor groups and the contents of composite roles (any depth) are included. Show the
   gains and losses to the person approving. They are part of the `digest`, and the
   destination's roles are read again right before each add, so a role attached (or added
-  to a composite) after the approval stops the run.
+  to a composite) after the approval stops the run. A row whose role change cannot be
+  shown (a current group that does not resolve by path, such as one with `/` in its name)
+  is refused.
+  Changed in 1.3.0: earlier versions refused any group with role mappings. If you relied on
+  that, list those groups in `KEYCLOAK_PROTECTED_GROUPS` before upgrading.
 - Membership can grant access without any role (a SAML/OIDC group mapper that a service
   provider checks, an authorization-services group policy). List the groups that must
   never be written by these tools, whatever their roles, in `KEYCLOAK_PROTECTED_GROUPS`.
@@ -218,7 +222,9 @@ deployment that shares the binary without an approval step never exposes them.
   membership does not undo access that happened while it was wrong.
 
 Writes need `manage-users`. Depending on the KeyCloak version, reading groups and their
-role mappings may also need `query-groups`; run `plan_group_changes` once to confirm.
+role mappings may also need `query-groups`. Expanding composite roles reads realm roles
+(`view-realm`) and naming client roles reads clients (`view-clients`). Run
+`plan_group_changes` once to confirm.
 
 ### Verify your setup
 

@@ -270,6 +270,15 @@ class TestPlan:
         row = p["rows"][0]
         assert row["status"] == "no-op" and row["gained_roles"] == [] and row["lost_roles"] == []
 
+    def test_current_group_whose_roles_cannot_be_read_stops_the_row(self, kc, cfg):
+        # A group named with a '/' cannot be looked up by path, so its roles are unknown and
+        # the role change of the move cannot be shown: the row is refused, nothing raises.
+        kc.groups["(slash)"] = {"id": "g-slash", "path": "/Legacy/a/b", "name": "a/b"}
+        kc.members["u-alice"].add("g-slash")
+        p = plan_changes(kc, cfg, [{"username": "alice", "remove": None, "add": "/Staff/HQ/General"}])
+        assert p["ok"] is False and p["digest"] is None
+        assert "cannot read the roles of group '/Legacy/a/b'" in p["rows"][0]["status"]
+
     def test_duplicate_user(self, kc, cfg):
         p = plan_changes(kc, cfg, [_swap()[0], dict(_swap()[0])])
         assert p["ok"] is False and "duplicate" in p["rows"][1]["status"]
