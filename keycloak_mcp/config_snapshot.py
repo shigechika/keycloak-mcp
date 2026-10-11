@@ -151,10 +151,16 @@ def _holds_secret(key: str, value: Any) -> bool:
     """
     if key in _NOT_SECRET or key.startswith(_NOT_SECRET_PREFIXES) or not looks_like_credential_key(key):
         return False
+    flat = normalized(key)
+    if not looks_like_credential_key(flat.replace("token", "")) and not flat.endswith("token"):
+        # "token" inside a setting name (access.token.signed.response.alg,
+        # cibaBackchannelTokenDeliveryMode) names what the setting is about; only a key that
+        # ends in it (registrationAccessToken) holds one.
+        return False
     strings = [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str) and v != ""]
     if not strings:
         return False
-    if normalized(key).endswith(_ALWAYS_SECRET_SUFFIXES):
+    if flat.endswith(_ALWAYS_SECRET_SUFFIXES):
         return True
     return any(v not in ("true", "false") and not v.lstrip("-").isdigit() for v in strings)
 
@@ -215,15 +221,21 @@ def _status(exc: Exception) -> int | None:
     return getattr(resp, "status_code", None)
 
 
+def _unique(base: str, used: set[str]) -> str:
+    """``base``, or ``base #2``, ``base #3``... whichever is not in ``used`` yet (then added)."""
+    key, n = base, 1
+    while key in used:
+        n += 1
+        key = f"{base} #{n}"
+    used.add(key)
+    return key
+
+
 def _step_keys(execs: list[dict]) -> list[str]:
-    """One key per step: its name, with ``#2``... when a name repeats in the flow."""
-    seen: dict[str, int] = {}
-    keys = []
-    for e in execs:
-        name = e.get("displayName") or e.get("providerId") or "?"
-        seen[name] = seen.get(name, 0) + 1
-        keys.append(name if seen[name] == 1 else f"{name} #{seen[name]}")
-    return keys
+    """One key per step: its name, with ``#2``... when it is already taken in the flow
+    (also by a step whose real name ends in ``#2``)."""
+    used: set[str] = set()
+    return [_unique(e.get("displayName") or e.get("providerId") or "?", used) for e in execs]
 
 
 def _step(e: dict, auth_config) -> dict[str, Any]:
@@ -314,6 +326,7 @@ def _components(components: list[dict]) -> dict[str, Any]:
     """
     names = {c.get("id"): c.get("name") for c in components}
     out: dict[str, Any] = {}
+    used: set[str] = set()
     for c in sorted(components, key=lambda c: str(c.get("id", ""))):
         parts = (
             c.get("providerType", "").rsplit(".", 1)[-1],
@@ -321,12 +334,7 @@ def _components(components: list[dict]) -> dict[str, Any]:
             names.get(c.get("parentId")),
             c.get("name") or "",
         )
-        key = base = "/".join(x for x in parts if x)
-        n = 1
-        while key in out:
-            n += 1
-            key = f"{base} #{n}"
-        out[key] = _scrub(c)
+        out[_unique("/".join(x for x in parts if x), used)] = _scrub(c)
     return out
 
 
@@ -369,7 +377,12 @@ def collect(kc, deadline: float | None = None) -> dict[str, Any]:
     section("clients", read_clients)
     client_names = {c["id"]: c.get("clientId", c["id"]) for c in clients}
 
-    section("roles", lambda: _roles(kc, deadline, client_names))
+    if "clients" in sections:
+        section("roles", lambda: _roles(kc, deadline, client_names))
+    else:
+        # Client roles inside composites are named by clientId; without the clients they
+        # would be named by UUID and every composite would look changed.
+        unavailable.append("roles")
     section("required_actions", lambda: _by_name(_get(kc, "/authentication/required-actions", deadline), "alias"))
     section(
         "client_scopes",

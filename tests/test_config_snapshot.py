@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import stat
+import sys
 import time
 from datetime import date, timedelta
 from unittest.mock import patch
@@ -194,6 +195,8 @@ class TestCollect:
                 "apiKey": "api-key-value",
                 "awsSecretKey": "aws-secret-value",
                 "access.token.claim": "true",
+                "access.token.signed.response.alg": "RS256",
+                "registrationAccessToken": "reg-token-value",
             }
         )
         attrs = cs.collect(kc)["sections"]["clients"]["app"]["attributes"]
@@ -201,6 +204,8 @@ class TestCollect:
             assert attrs[k] == cs.REDACTED, k
         assert attrs["client.secret.expiration"] == "1800000000"
         assert attrs["access.token.claim"] == "true"
+        assert attrs["access.token.signed.response.alg"] == "RS256"  # names a token, holds none
+        assert attrs["registrationAccessToken"] == cs.REDACTED
 
     def test_settings_named_like_secrets_stay_visible(self, kc):
         realm = cs.collect(kc)["sections"]["realm"]
@@ -274,6 +279,30 @@ class TestCollect:
         kc._get = missing
         steps = cs.collect(kc)["sections"]["flows"]["browser otp"]["steps"]
         assert steps["Condition - user role"]["authenticationConfig"] == "<missing>"
+
+    def test_a_step_named_like_a_generated_key_does_not_hide_another(self, kc):
+        kc.executions["browser otp"] = [
+            {"displayName": "OTP Form", "requirement": "REQUIRED"},
+            {"displayName": "OTP Form #2", "requirement": "CONDITIONAL"},
+            {"displayName": "OTP Form", "requirement": "ALTERNATIVE"},
+        ]
+        flow = cs.collect(kc)["sections"]["flows"]["browser otp"]
+        assert flow["order"] == ["OTP Form", "OTP Form #2", "OTP Form #3"]
+        assert [flow["steps"][k]["requirement"] for k in flow["order"]] == ["REQUIRED", "CONDITIONAL", "ALTERNATIVE"]
+
+    def test_roles_are_not_compared_without_the_client_names(self, kc):
+        a = cs.collect(kc)
+        orig = kc._paginate
+
+        def no_clients(path, params, page_size, max_total=None, deadline=None):
+            if path == "/clients":
+                raise httpx.HTTPStatusError("x", request=httpx.Request("GET", "x"), response=httpx.Response(403))
+            return orig(path, params, page_size, max_total, deadline)
+
+        kc._paginate = no_clients
+        b = cs.collect(kc)
+        assert {"clients", "roles"} <= set(b["unavailable"])
+        assert cs.diff(a, b) == []
 
     def test_components_with_the_same_name_under_different_parents(self, kc):
         kc.components += [
@@ -391,6 +420,7 @@ class TestStorage:
         assert stored["sections"]["realm"]["failureFactor"] == 30
         assert not list((tmp_path / cs.SNAPSHOT_DIR).glob(".tmp-*"))
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
     def test_files_are_private(self, tmp_path, kc):
         cs.save_if_first_today(str(tmp_path), date(2026, 10, 11), cs.collect(kc))
         d = tmp_path / cs.SNAPSHOT_DIR
