@@ -85,10 +85,31 @@ def test_groups_without_roles_and_other_events_are_left_out():
     assert out["rows"] == [] and out["checked"] == 1
 
 
-def test_group_is_looked_up_when_the_event_has_no_representation():
+def test_group_is_identified_by_id_not_by_the_path_in_the_event():
     kc = FakeKC()
-    out = ga.scan(kc, [_add(kc, "u1", "/Staff/HQ/IT", rep=False)])
-    assert out["rows"][0]["group"] == "/Staff/HQ/IT"
+    e = _add(kc, "u1", "/Staff/HQ/IT")
+    # Renamed since the event: the event still names the old path, now taken by a roleless group.
+    it = kc.groups.pop("/Staff/HQ/IT")
+    kc.groups["/Staff/HQ/Systems"] = {**it, "path": "/Staff/HQ/Systems", "name": "Systems"}
+    kc.groups["/Staff/HQ/IT"] = {"id": "g-new", "path": "/Staff/HQ/IT", "name": "IT"}
+    out = ga.scan(kc, [e])
+    assert out["rows"][0]["group"] == "/Staff/HQ/Systems"
+    assert out["rows"][0]["admin_roles"] == ["realm-management:realm-admin"]
+
+
+def test_rows_are_ordered_when_the_scan_stops_early(monkeypatch):
+    kc = FakeKC()
+    events = [_add(kc, "u1", "/Staff/Arts/Office"), _add(kc, "u2", "/Staff/HQ/IT"), _add(kc, "u3", "/Staff/Plain")]
+    calls = {"n": 0}
+
+    def stop_after_two(deadline):
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    monkeypatch.setattr(ga, "past_deadline", stop_after_two)
+    out = ga.scan(kc, events, deadline=0.0)
+    assert out["complete"] is False
+    assert [r["group"] for r in out["rows"]] == ["/Staff/HQ/IT", "/Staff/Arts/Office"]
 
 
 def test_a_deleted_group_is_counted_as_unresolved():

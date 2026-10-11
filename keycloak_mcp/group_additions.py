@@ -15,7 +15,6 @@ other than the read-only ``query-*`` and ``view-*`` ones (``realm-admin``,
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -33,17 +32,6 @@ def is_admin_role(label: str) -> bool:
     return client == ADMIN_CLIENT and bool(role) and not role.startswith(_READ_ONLY_PREFIXES)
 
 
-def _group_path(event: dict) -> str | None:
-    rep = event.get("representation")
-    if not rep:
-        return None
-    try:
-        data = json.loads(rep)
-    except (TypeError, ValueError):
-        return None
-    return data.get("path") if isinstance(data, dict) else None
-
-
 def _status(exc: Exception) -> int | None:
     return getattr(getattr(exc, "response", None), "status_code", None)
 
@@ -56,6 +44,11 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
     additions whose group or roles could not be read (the group was deleted since, or a
     path does not resolve); they are not rows. ``complete`` is False when the time budget
     ran out before every addition was checked.
+
+    The group is identified by the ID in the event's resource path and read as it is now
+    (the path in the event's representation is the one it had then, and the group or an
+    ancestor may have been renamed or moved since). Rows are ordered administrative
+    first, then by time, also when the scan stops early.
     """
     resolver = RoleResolver(kc, deadline)
     paths: dict[str, str | None] = {}
@@ -64,24 +57,27 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
     additions = [
         e for e in events if e.get("operationType") == "CREATE" and e.get("resourceType") == "GROUP_MEMBERSHIP"
     ]
+
+    def result(complete: bool) -> dict[str, Any]:
+        rows.sort(key=lambda r: (not r["admin_roles"], r["time"]))
+        return {"rows": rows, "checked": checked, "unresolved": unresolved, "complete": complete}
+
     for e in additions:
         if past_deadline(deadline):
-            return {"rows": rows, "checked": checked, "unresolved": unresolved, "complete": False}
+            return result(False)
         m = _MEMBERSHIP_PATH.match(e.get("resourcePath") or "")
         if not m:
             continue
         user_id, group_id = m.groups()
         try:
-            path = _group_path(e)
-            if path is None:
-                if group_id not in paths:
-                    try:
-                        paths[group_id] = (kc.get_group(group_id, deadline=deadline) or {}).get("path")
-                    except Exception as exc:
-                        if _status(exc) != 404:
-                            raise
-                        paths[group_id] = None  # deleted since
-                path = paths[group_id]
+            if group_id not in paths:
+                try:
+                    paths[group_id] = (kc.get_group(group_id, deadline=deadline) or {}).get("path")
+                except Exception as exc:
+                    if _status(exc) != 404:
+                        raise
+                    paths[group_id] = None  # deleted since
+            path = paths[group_id]
             checked += 1
             if not path:
                 unresolved += 1
@@ -91,7 +87,7 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
             unresolved += 1
             continue
         except DeadlineExceeded:
-            return {"rows": rows, "checked": checked, "unresolved": unresolved, "complete": False}
+            return result(False)
         if not roles:
             continue
         auth = e.get("authDetails") or {}
@@ -106,6 +102,4 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
                 "ip": auth.get("ipAddress", ""),
             }
         )
-    # Administrative additions first, then by time.
-    rows.sort(key=lambda r: (not r["admin_roles"], r["time"]))
-    return {"rows": rows, "checked": checked, "unresolved": unresolved, "complete": True}
+    return result(True)

@@ -87,7 +87,7 @@ Both tools accept `max_repr` to control the representation payload: positive = t
 | Tool | Description |
 |------|-------------|
 | `health_check` | Report the running server version and verify the KeyCloak backend is reachable and the service account can authenticate. Lightweight (one token request; no user/event/session scans). Returns a fixed-shape dict with `status`, `auth`, and the configured URL/realm. The tool's own description enumerates the values those fields can take, and is the one place that does. |
-| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, spray check (same rule as `spray_check`, with breached accounts and evidence), active sessions, password updates, admin events, and configuration changes (admin events on roles, role mappings, flows, client scopes, protocol mappers, components and the realm, plus the snapshot comparison when `KEYCLOAK_STATE_DIR` is set; both are flagged `[CONFIG]`) in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) and spray sources are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
+| `daily_brief` | One-shot morning health check: login stats, brute-force IPs, spray check (same rule as `spray_check`, with breached accounts and evidence), active sessions, password updates, admin events, and configuration changes (admin events on roles, role mappings, flows, client scopes, protocol mappers, components and the realm, plus the snapshot comparison when `KEYCLOAK_STATE_DIR` is set; both are flagged `[CONFIG]`), and additions to groups that carry roles (flagged `[PRIVILEGE]` when the group grants a `realm-management` role other than the read-only `query-*`/`view-*`) in a single Markdown summary. IPs exceeding `ip_failure_threshold` failures (default 50) and spray sources are flagged **WARNING**; API errors surface as **CRITICAL**. `since_hours` controls the look-back window (default 18 h). |
 
 ## Setup
 
@@ -243,6 +243,12 @@ fields; `get_config_changes` lists all of them.
   default client scopes, components, and identity providers when the service account may
   read them. Group role mappings and client roles are not in the snapshot; their admin
   events are reported instead.
+- Group memberships are not configuration and are not in the snapshot. Instead the brief
+  lists the additions in its look-back window to groups that carry a role (their own or
+  an ancestor's, through composites), with the roles, the user, and who added them. An
+  addition is `[PRIVILEGE]` when the group grants a `realm-management` role other than
+  `query-*`/`view-*` (`realm-admin`, `manage-users`, ...). The group is read by its ID as
+  it is now, so a rename since the event does not hide it.
 - Secrets are not stored: string values under keys containing `secret`, `password`,
   `privateKey`, `apiKey`, `credential`, `token` and similar (the markers `get_user` also
   uses) are replaced with `<redacted>`, so a changed secret does not show as a change.
