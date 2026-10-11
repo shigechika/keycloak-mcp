@@ -164,7 +164,7 @@ deployment that shares the binary without an approval step never exposes them.
 
 | Tool | Admin API call |
 |---|---|
-| `plan_group_changes` | read-only: `GET /users?username=...&exact=true`, `GET /group-by-path/...`, `GET /groups/{id}/role-mappings`, `GET /users/{id}/groups` |
+| `plan_group_changes` | read-only: `GET /users?username=...&exact=true`, `GET /group-by-path/...`, `GET /groups/{id}/role-mappings`, `GET /roles-by-id/{id}/composites`, `GET /clients/{id}`, `GET /users/{id}/groups` |
 | `apply_group_changes` | `PUT /users/{id}/groups/{groupId}` then `DELETE /users/{id}/groups/{groupId}` |
 
 - `plan_group_changes` resolves every user and group by exact name/path and returns, per
@@ -193,11 +193,15 @@ deployment that shares the binary without an approval step never exposes them.
   their descendants.
 - A group that carries roles is not refused: moving someone into a department's admin
   group is an ordinary transfer when the approver can do the same in the admin console.
-  Each plan row lists the roles the user gains (`add_roles`) and loses (`remove_roles`),
-  realm roles by name and client roles as `client:role`, including those inherited from
-  ancestor groups. Show them to the person approving. They are part of the `digest`, and
-  the destination's roles are read again right before each add, so a role attached after
-  the approval stops the run.
+  Each plan row lists `gained_roles` and `lost_roles`: the difference the move makes to the
+  roles the user holds through all their group memberships (a role kept through a shared
+  ancestor or another group is neither; roles mapped to the user directly are not read).
+  `add_roles` and `remove_roles` are the roles membership in each named group carries.
+  Realm roles appear by name and client roles as `client:role`; roles inherited from
+  ancestor groups and the contents of composite roles (any depth) are included. Show the
+  gains and losses to the person approving. They are part of the `digest`, and the
+  destination's roles are read again right before each add, so a role attached (or added
+  to a composite) after the approval stops the run.
 - Membership can grant access without any role (a SAML/OIDC group mapper that a service
   provider checks, an authorization-services group policy). List the groups that must
   never be written by these tools, whatever their roles, in `KEYCLOAK_PROTECTED_GROUPS`.

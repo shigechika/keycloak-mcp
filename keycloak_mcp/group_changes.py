@@ -21,13 +21,17 @@ exposes them. Writes are confined to groups under that root that are not listed 
 ``KEYCLOAK_PROTECTED_GROUPS``.
 
 Moving someone into a group can grant privileges: realm and client roles mapped to the
-group or any ancestor, and access that applications derive from membership itself
-(SAML/OIDC group mappers, authorization-services group policies). The plan does not refuse
-such groups; it reports, per row, the roles the user gains (``add_roles``) and loses
-(``remove_roles``), inherited ones included, so that the person approving sees them. The
-roles are part of the digest, and the destination's roles are read again before each add,
-so a role attached after the approval stops the run. Groups that must never be written,
-whatever their roles, belong in ``KEYCLOAK_PROTECTED_GROUPS``.
+group or any ancestor (and everything those roles contain when they are composite), and
+access that applications derive from membership itself (SAML/OIDC group mappers,
+authorization-services group policies). The plan does not refuse such groups; it reports
+them so that the person approving sees them. Per row, ``add_roles`` / ``remove_roles`` are
+the roles membership in that group carries, and ``gained_roles`` / ``lost_roles`` are the
+difference the move makes to what the user holds through all their group memberships
+(roles mapped to the user directly are not read). Roles are expanded through composites
+and inherited from ancestors. They are part of the digest, and the destination's roles are
+read again before each add, so a role attached (or added to a composite) after the approval
+stops the run. Groups that must never be written, whatever their roles, belong in
+``KEYCLOAK_PROTECTED_GROUPS``.
 
 Restoring a membership does not undo what happened while it was wrong (sessions, tokens,
 mail). The reverse changes returned by :func:`apply_changes` are a proposal for a human to
@@ -164,6 +168,8 @@ class _Resolver:
         self.deadline = deadline
         self._groups: dict[str, dict | None] = {}
         self._group_roles: dict[str, list[str]] = {}
+        self._composites: dict[str, list[dict]] = {}
+        self._client_names: dict[str, str] = {}
 
     def group(self, path: str) -> dict | None:
         """The group at exactly ``path`` (the returned ``path`` must match), else ``None``."""
@@ -172,14 +178,39 @@ class _Resolver:
             self._groups[path] = g if isinstance(g, dict) and g.get("path") == path and g.get("id") else None
         return self._groups[path]
 
+    def _label(self, role: dict, client: str | None = None) -> str:
+        """A realm role by name, a client role as ``clientId:role``."""
+        if not role.get("clientRole") and client is None:
+            return role.get("name", "")
+        if client is None:
+            cid = role.get("containerId", "")
+            if cid not in self._client_names:
+                rep = self.kc.get_client(cid, deadline=self.deadline) or {}
+                self._client_names[cid] = rep.get("clientId") or cid
+            client = self._client_names[cid]
+        return f"{client}:{role.get('name', '')}"
+
     def _own_roles(self, group_id: str) -> list[str]:
-        """Roles mapped to the group itself: realm roles by name, client roles as ``client:role``."""
+        """Roles the group itself grants, expanded through composite roles (any depth)."""
         if group_id not in self._group_roles:
             rm = self.kc.get_group_role_mappings(group_id, deadline=self.deadline) or {}
-            names = [r.get("name", "") for r in rm.get("realmMappings") or []]
+            todo: list[tuple[dict, str | None]] = [(r, None) for r in rm.get("realmMappings") or []]
             for client, v in (rm.get("clientMappings") or {}).items():
-                names += [f"{client}:{r.get('name', '')}" for r in (v or {}).get("mappings") or []]
-            self._group_roles[group_id] = names
+                todo += [(r, client) for r in (v or {}).get("mappings") or []]
+            names: set[str] = set()
+            while todo:
+                role, client = todo.pop()
+                label = self._label(role, client)
+                if label in names:
+                    continue
+                names.add(label)
+                if role.get("composite") and role.get("id"):
+                    if role["id"] not in self._composites:
+                        self._composites[role["id"]] = (
+                            self.kc.get_role_composites(role["id"], deadline=self.deadline) or []
+                        )
+                    todo += [(r, None) for r in self._composites[role["id"]]]
+            self._group_roles[group_id] = sorted(names)
         return self._group_roles[group_id]
 
     def roles(self, path: str) -> list[str]:
@@ -258,6 +289,8 @@ def _digest(cfg: GroupWriteConfig, rows: list[dict]) -> str:
                 "add": [r.get("add"), r.get("add_id")],
                 "add_roles": r.get("add_roles", []),
                 "remove_roles": r.get("remove_roles", []),
+                "gained_roles": r.get("gained_roles", []),
+                "lost_roles": r.get("lost_roles", []),
                 "current": sorted(r.get("current_ids", [])),
                 "ops": r.get("ops", []),
                 "status": r["status"],
@@ -325,6 +358,29 @@ def _decide_single(row: dict, current: list[dict], resolver: _Resolver) -> None:
     row["ops"] = ["add"]
     row["status"] = OK
     row["after_ids"] = [row["add_id"]]
+
+
+def _role_impact(row: dict, current: list[dict], resolver: _Resolver) -> None:
+    """``gained_roles`` / ``lost_roles``: what the user holds through their groups after the
+    move minus before, and the reverse. A role kept through a shared ancestor or another
+    membership is neither. Nothing changes for a no-op row."""
+    paths = {g["id"]: g.get("path", "") for g in current}
+    if row.get("add_id"):
+        paths[row["add_id"]] = row["add"]
+    if row.get("remove_id"):
+        paths[row["remove_id"]] = row["remove"]
+    after_ids = row.get("after_ids", sorted(paths))
+
+    def held(ids) -> set[str]:
+        out: set[str] = set()
+        for gid in ids:
+            if paths.get(gid):
+                out.update(resolver.roles(paths[gid]))
+        return out
+
+    before, after = held(row.get("current_ids", [])), held(after_ids)
+    row["gained_roles"] = sorted(after - before)
+    row["lost_roles"] = sorted(before - after)
 
 
 def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None = None) -> dict[str, Any]:
@@ -404,6 +460,8 @@ def plan_changes(kc, cfg: GroupWriteConfig, changes: Any, deadline: float | None
                 _decide_single(row, current, resolver)
             else:
                 _decide(row)
+            if row["status"] in (OK, NO_OP):
+                _role_impact(row, current, resolver)
             rows.append(row)
     except (_OutOfTime, DeadlineExceeded) as exc:
         return {

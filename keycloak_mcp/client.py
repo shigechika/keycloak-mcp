@@ -367,6 +367,10 @@ class KeyCloakClient:
         """Role mappings assigned directly to a group (``realmMappings`` / ``clientMappings``)."""
         return self._get(f"/groups/{group_id}/role-mappings", deadline=deadline)
 
+    def get_role_composites(self, role_id: str, deadline: float | None = None) -> list[dict]:
+        """The roles a composite role contains (realm and client roles, one level down)."""
+        return self._get(f"/roles-by-id/{role_id}/composites", deadline=deadline)
+
     def get_group_children(self, group_id: str, first: int = 0, max_results: int = 100) -> list[dict]:
         """Get the direct child (sub-)groups of a group (single page)."""
         return self._get(f"/groups/{group_id}/children", {"first": first, "max": max_results})
@@ -527,9 +531,9 @@ class KeyCloakClient:
         """List all clients."""
         return self._get("/clients", {"max": max_results})
 
-    def get_client(self, client_id: str) -> dict:
+    def get_client(self, client_id: str, deadline: float | None = None) -> dict:
         """Get client by internal ID."""
-        return self._get(f"/clients/{client_id}")
+        return self._get(f"/clients/{client_id}", deadline=deadline)
 
     def get_client_by_client_id(self, client_id: str) -> dict | None:
         """Get client by clientId (not internal UUID)."""
