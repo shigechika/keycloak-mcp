@@ -247,8 +247,11 @@ fields; `get_config_changes` lists all of them.
   lists the additions in its look-back window to groups that carry a role (their own or
   an ancestor's, through composites), with the roles, the user, and who added them. An
   addition is `[PRIVILEGE]` when the group grants a `realm-management` role other than
-  `query-*`/`view-*` (`realm-admin`, `manage-users`, ...). The group is read by its ID as
-  it is now, so a rename since the event does not hide it.
+  `query-*`/`view-*` (`realm-admin`, `manage-users`, ...); in the master realm also a
+  `<realm>-realm` admin-client role or the `admin` realm role. The group is read by its ID
+  as it is now and its roles are followed through `parentId`, so a rename or move since
+  the event does not hide it. An addition whose group cannot be read is a `[CONFIG]`
+  warning of its own; the check has at most 8 s of the Configuration section's budget.
 - Secrets are not stored: string values under keys containing `secret`, `password`,
   `privateKey`, `apiKey`, `credential`, `token` and similar (the markers `get_user` also
   uses) are replaced with `<redacted>`, so a changed secret does not show as a change.

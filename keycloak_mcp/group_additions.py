@@ -8,18 +8,22 @@ resolves the roles each group carries (its own and its ancestors', through compo
 roles, the same way the group-change tools report them) and keeps the additions to groups
 that carry any role.
 
-An addition is *administrative* when the group carries a ``realm-management`` client role
-other than the read-only ``query-*`` and ``view-*`` ones (``realm-admin``,
-``manage-users``, ``impersonation``, ...).
+An addition is *administrative* when the group carries a role that administers a realm:
+a ``realm-management`` client role, or in the master realm a ``<realm>-realm`` client
+role, other than the read-only ``query-*`` and ``view-*`` ones (``realm-admin``,
+``manage-users``, ``impersonation``, ...), or the master realm's ``admin`` realm role.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from .client import DeadlineExceeded, past_deadline
-from .group_changes import RoleResolver, RolesUnknown
+from .group_changes import RoleResolver
+
+logger = logging.getLogger(__name__)
 
 ADMIN_CLIENT = "realm-management"
 _READ_ONLY_PREFIXES = ("query-", "view-")
@@ -27,9 +31,13 @@ _MEMBERSHIP_PATH = re.compile(r"^users/([^/]+)/groups/([^/]+)$")
 
 
 def is_admin_role(label: str) -> bool:
-    """``realm-management:<role>`` that is not read-only."""
-    client, _, role = label.partition(":")
-    return client == ADMIN_CLIENT and bool(role) and not role.startswith(_READ_ONLY_PREFIXES)
+    """A role that administers a realm and is not read-only (see the module docstring)."""
+    if label == "admin":  # the master realm's superuser role
+        return True
+    client, sep, role = label.partition(":")
+    if not sep or not role or role.startswith(_READ_ONLY_PREFIXES):
+        return False
+    return client == ADMIN_CLIENT or client.endswith("-realm")
 
 
 def _status(exc: Exception) -> int | None:
@@ -37,21 +45,23 @@ def _status(exc: Exception) -> int | None:
 
 
 def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any]:
-    """Additions to role-carrying groups among ``events`` (admin events, any type).
+    """Additions to role-carrying groups among ``events`` (admin events, any type), newest
+    first within each tier.
 
     Returns ``{"rows", "checked", "unresolved", "complete"}``. Each row is ``{"time",
     "user_id", "group", "roles", "admin_roles", "admin", "ip"}``. ``unresolved`` counts
     additions whose group or roles could not be read (the group was deleted since, or a
-    path does not resolve); they are not rows. ``complete`` is False when the time budget
+    read failed); they are not rows, and the scan goes on with the next one. ``complete`` is False when the time budget
     ran out before every addition was checked.
 
     The group is identified by the ID in the event's resource path and read as it is now
     (the path in the event's representation is the one it had then, and the group or an
-    ancestor may have been renamed or moved since). Rows are ordered administrative
-    first, then by time, also when the scan stops early.
+    ancestor may have been renamed or moved since); its roles are followed through the
+    ``parentId`` chain. Rows are ordered administrative first, then newest first, also
+    when the scan stops early.
     """
     resolver = RoleResolver(kc, deadline)
-    paths: dict[str, str | None] = {}
+    groups: dict[str, dict | None] = {}
     rows: list[dict[str, Any]] = []
     checked = unresolved = 0
     additions = [
@@ -59,7 +69,7 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
     ]
 
     def result(complete: bool) -> dict[str, Any]:
-        rows.sort(key=lambda r: (not r["admin_roles"], r["time"]))
+        rows.sort(key=lambda r: (not r["admin_roles"], -int(r["time"] or 0)))
         return {"rows": rows, "checked": checked, "unresolved": unresolved, "complete": complete}
 
     for e in additions:
@@ -69,25 +79,29 @@ def scan(kc, events: list[dict], deadline: float | None = None) -> dict[str, Any
         if not m:
             continue
         user_id, group_id = m.groups()
+        checked += 1
         try:
-            if group_id not in paths:
+            if group_id not in groups:
                 try:
-                    paths[group_id] = (kc.get_group(group_id, deadline=deadline) or {}).get("path")
+                    groups[group_id] = kc.get_group(group_id, deadline=deadline) or None
+                except DeadlineExceeded:
+                    raise
                 except Exception as exc:
                     if _status(exc) != 404:
                         raise
-                    paths[group_id] = None  # deleted since
-            path = paths[group_id]
-            checked += 1
-            if not path:
+                    groups[group_id] = None  # deleted since
+            group = groups[group_id]
+            if not group:
                 unresolved += 1
                 continue
-            roles = resolver.roles(path)
-        except RolesUnknown:
-            unresolved += 1
-            continue
+            path = group.get("path", "")
+            roles = resolver.roles_of(group)
         except DeadlineExceeded:
             return result(False)
+        except Exception as exc:  # noqa: BLE001 - one unreadable group must not hide the others
+            logger.warning("group addition %s could not be checked: %s: %s", group_id, type(exc).__name__, exc)
+            unresolved += 1
+            continue
         if not roles:
             continue
         auth = e.get("authDetails") or {}

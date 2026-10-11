@@ -132,6 +132,59 @@ def test_is_admin_role():
     assert not ga.is_admin_role("realm-management:query-groups")
     assert not ga.is_admin_role("other-client:manage-users")
     assert not ga.is_admin_role("センター管理者")
+    # master realm: the superuser role and the per-realm admin clients
+    assert ga.is_admin_role("admin")
+    assert ga.is_admin_role("myrealm-realm:manage-users")
+    assert not ga.is_admin_role("myrealm-realm:view-users")
+
+
+def _with_parent_ids(kc):
+    for g in kc.groups.values():
+        parent = g["path"].rsplit("/", 1)[0]
+        g["parentId"] = kc.groups[parent]["id"] if parent else None
+    return kc
+
+
+def test_roles_follow_parent_ids_not_paths():
+    kc = _with_parent_ids(FakeKC())
+    # Inherited from /Staff/HQ/IT when the target is a child of it.
+    kc.groups["/Staff/HQ/IT/Ops"] = {
+        "id": "g-ops",
+        "path": "/Staff/HQ/IT/Ops",
+        "name": "Ops",
+        "parentId": kc.groups["/Staff/HQ/IT"]["id"],
+    }
+
+    def no_paths(path, deadline=None):
+        raise AssertionError("roles must be found through parentId, not by path")
+
+    kc.get_group_by_path = no_paths
+    e = _add(kc, "u1", "/Staff/HQ/IT/Ops")
+    out = ga.scan(kc, [e])
+    assert out["rows"][0]["admin_roles"] == ["realm-management:realm-admin"]
+
+
+def test_one_unreadable_group_does_not_hide_the_others():
+    kc = FakeKC()
+    broken = kc.groups["/Staff/Arts/Office"]["id"]
+    orig = kc.get_group
+
+    def flaky(gid, deadline=None):
+        if gid == broken:
+            raise httpx.HTTPStatusError("x", request=httpx.Request("GET", "x"), response=httpx.Response(500))
+        return orig(gid, deadline)
+
+    kc.get_group = flaky
+    out = ga.scan(kc, [_add(kc, "u1", "/Staff/Arts/Office"), _add(kc, "u2", "/Staff/HQ/IT")])
+    assert out["complete"] and out["unresolved"] == 1 and out["checked"] == 2
+    assert [r["group"] for r in out["rows"]] == ["/Staff/HQ/IT"]
+
+
+def test_newest_first_within_a_tier():
+    kc = FakeKC()
+    now = int(time.time() * 1000)
+    out = ga.scan(kc, [_add(kc, "u1", "/Staff/Arts/Office", t=now - 1000), _add(kc, "u2", "/Staff/Arts/Office", t=now)])
+    assert [r["user_id"] for r in out["rows"]] == ["u2", "u1"]
 
 
 @patch.object(server, "_kc")
@@ -156,7 +209,7 @@ def test_daily_brief_flags_administrative_additions(mock, monkeypatch):
     assert "## WARNING" in out
     assert "[PRIVILEGE] 1 addition(s) to groups that grant administrative roles (/Staff/HQ/IT)" in out
     assert "Additions to groups that carry roles: 2 (administrative: 1) of 2 group additions" in out
-    assert "u1@example.org -> /Staff/HQ/IT  roles: realm-management:realm-admin" in out
+    assert "u1@example.org -> /Staff/HQ/IT  roles: realm-management:realm-admin  by admin-1@example.org" in out
     assert "u2@example.org -> /Staff/Arts/Office  roles: arts-admin" in out
     assert "u0@example.org" not in out  # before the window
 
@@ -177,3 +230,48 @@ def test_daily_brief_survives_a_failing_check(mock, monkeypatch, capsys):
     out = server.daily_brief()
     assert "## CRITICAL" not in out and "group-addition check failed (RuntimeError)" in out
     assert "boom" in capsys.readouterr().err
+
+
+def _brief_mock(mock, kc, events, trunc=False):
+    m = mock.return_value
+    for name in ("get_group_by_path", "get_group", "get_group_role_mappings", "get_role_composites", "get_client"):
+        getattr(m, name).side_effect = getattr(kc, name)
+    m.get_events_all.return_value = ([], False)
+    m.get_session_stats.return_value = []
+    m.get_user_by_id.side_effect = lambda uid, deadline=None: {"username": f"{uid}@example.org"}
+
+    def admin_events(**kw):
+        if kw.get("resource_types") == ["GROUP_MEMBERSHIP"]:
+            return list(events), trunc
+        return [], False
+
+    m.get_admin_events_all.side_effect = admin_events
+
+
+@patch.object(server, "_kc")
+def test_daily_brief_says_unknown_when_nothing_could_be_read(mock, monkeypatch):
+    monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
+    _brief_mock(mock, FakeKC(), [], trunc=True)
+    out = server.daily_brief()
+    assert "Additions to groups that carry roles: unknown" in out
+    assert "[PARTIAL] group additions could not be read" in out
+    assert "of 0 group additions" not in out
+
+
+@patch.object(server, "_kc")
+def test_daily_brief_says_at_least_when_the_read_was_cut(mock, monkeypatch):
+    monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
+    kc = FakeKC()
+    _brief_mock(mock, kc, [_add(kc, "u1", "/Staff/HQ/IT")], trunc=True)
+    out = server.daily_brief()
+    assert "of at least 1 group additions" in out and "checked for 1 of at least 1" in out
+
+
+@patch.object(server, "_kc")
+def test_daily_brief_warns_about_unchecked_additions(mock, monkeypatch):
+    monkeypatch.delenv("KEYCLOAK_STATE_DIR", raising=False)
+    kc = FakeKC()
+    kc.deleted.add(kc.groups["/Staff/HQ/IT"]["id"])
+    _brief_mock(mock, kc, [_add(kc, "u1", "/Staff/HQ/IT")])
+    out = server.daily_brief()
+    assert "## WARNING" in out and "[CONFIG] 1 group addition(s) could not be checked" in out

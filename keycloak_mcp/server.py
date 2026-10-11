@@ -2414,6 +2414,10 @@ def get_config_changes(baseline_date: str = "") -> str:
 _CONFIG_BUDGET_SECONDS = 15.0
 
 
+#: Of the configuration part's budget, the most the group-addition check may use.
+_GROUP_ADDITIONS_SECONDS = 8.0
+
+
 def _short_roles(roles: list[str], limit: int = 100) -> str:
     text = ", ".join(roles)
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -2429,10 +2433,14 @@ def _group_additions_brief(date_from: str, since_ms: int, deadline: float | None
             operation_types=["CREATE"],
             resource_types=["GROUP_MEMBERSHIP"],
             date_from=date_from,
-            max_events=1000,
+            max_events=_max_events(),
             deadline=deadline,
         )
         evts = [e for e in evts if int(e.get("time", 0)) >= since_ms]
+        if trunc and not evts:
+            return ["[PARTIAL] group additions could not be read (time or size budget); not checked"], [
+                "- Additions to groups that carry roles: unknown (the admin events could not be read in time)"
+            ]
         found = group_additions.scan(kc, evts, deadline)
     except Exception as exc:
         print(f"daily_brief group additions: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -2445,28 +2453,37 @@ def _group_additions_brief(date_from: str, since_ms: int, deadline: float | None
             f"[PRIVILEGE] {len(admin_rows)} addition(s) to groups that grant administrative roles "
             f"({', '.join(sorted({r['group'] for r in admin_rows}))})"
         )
+    if found["unresolved"]:
+        warnings.append(
+            f"[CONFIG] {found['unresolved']} group addition(s) could not be checked "
+            "(group deleted since, or unreadable); check them in the admin console"
+        )
+    total = f"at least {len(evts)}" if trunc else str(len(evts))
     if trunc or not found["complete"]:
         warnings.append(
-            f"[PARTIAL] group additions checked for {found['checked']} of {len(evts)} "
+            f"[PARTIAL] group additions checked for {found['checked']} of {total} "
             "(time or size budget); the rest were not checked"
         )
     lines.append(
         f"- Additions to groups that carry roles: {len(rows)} (administrative: {len(admin_rows)}) "
-        f"of {len(evts)} group additions"
+        f"of {total} group additions"
         + (f"; {found['unresolved']} could not be resolved" if found["unresolved"] else "")
     )
     names: dict[str, str] = {}
-    for r in rows[:15]:
-        uid = r["user_id"]
-        if uid not in names:
+
+    def name(uid: str) -> str:
+        if uid and uid not in names:
             try:
                 names[uid] = (kc.get_user_by_id(uid, deadline=deadline) or {}).get("username") or uid
             except Exception:
                 names[uid] = uid
+        return names.get(uid, uid or "-")
+
+    for r in rows[:15]:
         shown = r["admin_roles"] or [x for x in r["roles"] if ":" not in x] or r["roles"]
         lines.append(
-            f"  - {_format_ts(r['time'])}  {names[uid]} -> {r['group']}  roles: {_short_roles(shown)}  "
-            f"admin={r['admin']} ip={_label_ip(r['ip']) if r['ip'] else '-'}"
+            f"  - {_format_ts(r['time'])}  {name(r['user_id'])} -> {r['group']}  roles: {_short_roles(shown)}  "
+            f"by {name(r['admin'])} ip={_label_ip(r['ip']) if r['ip'] else '-'}"
         )
     if len(rows) > 15:
         lines.append(f"  - … {len(rows) - 15} more")
@@ -2499,6 +2516,13 @@ def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tupl
         print(f"daily_brief config events: {type(exc).__name__}: {exc}", file=sys.stderr)
         evts, evts_trunc = None, False
         lines.append(f"- Configuration admin events could not be read ({type(exc).__name__})")
+
+    # Group additions first, with their own slice, so the snapshot read cannot use it up.
+    own_slice = deadline_after(_GROUP_ADDITIONS_SECONDS)
+    slice_deadline = own_slice if deadline is None else min(deadline, own_slice or deadline)
+    w, more = _group_additions_brief(date_from, since_ms, slice_deadline)
+    warnings += w
+    lines += more
 
     state = _state_dir()
     if state is None:
@@ -2535,10 +2559,6 @@ def _config_brief(date_from: str, since_ms: int, deadline: float | None) -> tupl
         except Exception as exc:
             print(f"daily_brief config: {type(exc).__name__}: {exc}", file=sys.stderr)
             warnings.append(f"[CONFIG] configuration check failed ({type(exc).__name__}); see the server log")
-
-    w, more = _group_additions_brief(date_from, since_ms, deadline)
-    warnings += w
-    lines += more
 
     if evts is not None:
         if evts:

@@ -171,6 +171,7 @@ class RoleResolver:
         self.kc = kc
         self.deadline = deadline
         self._groups: dict[str, dict | None] = {}
+        self._by_id: dict[str, dict | None] = {}
         self._group_roles: dict[str, list[str]] = {}
         self._composites: dict[str, list[dict]] = {}
         self._client_names: dict[str, str] = {}
@@ -216,6 +217,27 @@ class RoleResolver:
                     todo += [(r, None) for r in self._composites[role["id"]]]
             self._group_roles[group_id] = sorted(names)
         return self._group_roles[group_id]
+
+    def roles_of(self, group: dict) -> list[str]:
+        """Roles a member of ``group`` (a representation read by ID) holds through it: its own
+        and every ancestor's, found through ``parentId`` so the lookup stays tied to the IDs
+        (a rename or move of a path cannot swap in another group). Falls back to the path
+        when the server does not return ``parentId``."""
+        if "parentId" not in group and group.get("path", "").count("/") > 1:
+            return self.roles(group["path"])
+        names: set[str] = set()
+        seen: set[str] = set()
+        g: dict | None = group
+        while g is not None and g.get("id") not in seen:
+            seen.add(g["id"])
+            names.update(self._own_roles(g["id"]))
+            parent = g.get("parentId")
+            if not parent:
+                break
+            if parent not in self._by_id:
+                self._by_id[parent] = self.kc.get_group(parent, deadline=self.deadline)
+            g = self._by_id[parent]
+        return sorted(names)
 
     def roles(self, path: str) -> list[str]:
         """Roles a member of ``path`` holds through it: its own and every ancestor's (sorted).
