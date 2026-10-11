@@ -198,6 +198,8 @@ class TestCollect:
                 "access.token.signed.response.alg": "RS256",
                 "registrationAccessToken": "reg-token-value",
                 "access_token_value": "opaque-bearer-value",
+                "token.claim.name": "groups",
+                "tokenUrl": "https://idp.example/token",
             }
         )
         attrs = cs.collect(kc)["sections"]["clients"]["app"]["attributes"]
@@ -208,6 +210,8 @@ class TestCollect:
         assert attrs["access.token.signed.response.alg"] == "RS256"  # names a token, holds none
         assert attrs["registrationAccessToken"] == cs.REDACTED
         assert attrs["access_token_value"] == cs.REDACTED
+        assert attrs["token.claim.name"] == "groups"
+        assert attrs["tokenUrl"] == "https://idp.example/token"
 
     def test_settings_named_like_secrets_stay_visible(self, kc):
         realm = cs.collect(kc)["sections"]["realm"]

@@ -81,8 +81,12 @@ CONFIG_EVENT_TYPES = (
 _NOT_SECRET = {"passwordPolicy", "requiredCredentials", "resetCredentialsFlow", "cibaBackchannelTokenDeliveryMode"}
 _NOT_SECRET_PREFIXES = ("webAuthnPolicyPasswordless",)
 #: Endings (normalized) of settings about tokens rather than tokens: algorithms, modes,
-#: formats, claims, lifespans.
+#: formats, claims and claim names, endpoints, lifespans.
 _TOKEN_SETTING_SUFFIXES = (
+    "name",
+    "url",
+    "uri",
+    "endpoint",
     "alg",
     "enc",
     "mode",
