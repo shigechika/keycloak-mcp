@@ -151,13 +151,24 @@ def _session_key(s: dict) -> str:
     return str(s.get("id") or (s.get("start"), s.get("ipAddress"), s.get("userId")))
 
 
-def _merged_sessions(user_id: str) -> list[dict]:
-    """A user's sessions merged over several probes (each on its own connection, see session_probe)."""
+def _merged_sessions(user_id: str) -> tuple[list[dict], bool]:
+    """A user's sessions merged over several probes (each on its own connection, see session_probe).
+
+    Bounded by KEYCLOAK_DEADLINE; returns (sessions, complete), complete False when the
+    time ran out before every probe was made.
+    """
+    deadline = deadline_after(_deadline_seconds())
     merged: dict[str, dict] = {}
     for _ in range(_session_probes()):
-        for sess in _kc().session_probe(user_id):
+        if past_deadline(deadline):
+            return list(merged.values()), False
+        try:
+            found = _kc().session_probe(user_id, deadline=deadline)
+        except DeadlineExceeded:
+            return list(merged.values()), False
+        for sess in found:
             merged.setdefault(_session_key(sess), sess)
-    return list(merged.values())
+    return list(merged.values()), True
 
 
 def _max_events() -> int | None:
@@ -814,10 +825,11 @@ def get_user_sessions(username: str) -> str:
     u, err = _resolve_user(username)
     if err:
         return err
-    sessions = _merged_sessions(u["id"])
+    sessions, complete = _merged_sessions(u["id"])
+    partial = "" if complete else " (⚠️ time limit reached before every probe — the list may be incomplete)"
     if not sessions:
-        return f"No active sessions for {username}"
-    lines = [f"Active sessions for {username}: {len(sessions)}"]
+        return f"No active sessions for {username}{partial}"
+    lines = [f"Active sessions for {username}: {len(sessions)}{partial}"]
     for s in sessions:
         clients = s.get("clients", {})
         client_names = ", ".join(clients.values()) if clients else "none"
@@ -840,7 +852,8 @@ def logout_user(username: str) -> str:
     on until no session is seen on KEYCLOAK_LOGOUT_CLEAN_PROBES probes in a row
     (default 10), at most KEYCLOAK_LOGOUT_MAX_PROBES (default 40), so that nodes
     that do not share sessions behind a load balancer are all reached. The
-    resulting ``notBefore`` is reported.
+    resulting ``notBefore`` is reported. The whole run is bounded by
+    KEYCLOAK_DEADLINE; when it runs out, the result says verification is incomplete.
 
     Args:
         username: Exact username (email).
@@ -849,19 +862,37 @@ def logout_user(username: str) -> str:
     if err:
         return err
     clean_needed, most = _logout_probes()
+    deadline = deadline_after(_deadline_seconds())
     removed: dict[str, dict] = {}
     probes = clean = 0
+    timed_out = False
     while probes < most and clean < clean_needed:
+        if past_deadline(deadline):
+            timed_out = True
+            break
+        try:
+            found = _kc().session_probe(u["id"], logout=True, deadline=deadline)
+        except DeadlineExceeded:
+            timed_out = True
+            break
         probes += 1
-        found = _kc().session_probe(u["id"], logout=True)
         if found:
             clean = 0
             for sess in found:
                 removed.setdefault(_session_key(sess), sess)
         else:
             clean += 1
-    not_before = _kc().get_user_not_before(u["id"])
+    try:
+        not_before = _kc().get_user_not_before(u["id"], deadline=None if timed_out else deadline)
+    except DeadlineExceeded:
+        not_before = 0
     cutoff = f"tokens issued before {_format_ts(not_before * 1000)} are rejected" if not_before else "notBefore not set"
+    if timed_out:
+        return (
+            f"⚠️ {username}: time limit reached after {probes} completed probe(s) "
+            f"({len(removed)} distinct session(s) logged out so far; {cutoff}) — "
+            "verification incomplete, run logout_user again"
+        )
     if clean < clean_needed:
         return (
             f"⚠️ {username}: sessions were still seen after {probes} probe(s) "
@@ -899,7 +930,7 @@ def set_user_enabled(username: str, enabled: bool) -> str:
     _kc().set_user_enabled(u["id"], enabled)
     msg = f"Set {username} enabled={enabled}"
     if not enabled:
-        sessions = _merged_sessions(u["id"])
+        sessions, _complete = _merged_sessions(u["id"])
         if sessions:
             msg += f"; {len(sessions)} active session(s) remain — run logout_user to terminate them"
     return msg

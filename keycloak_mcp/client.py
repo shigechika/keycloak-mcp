@@ -268,7 +268,7 @@ class KeyCloakClient:
         """Get active sessions for a user."""
         return self._get(f"/users/{user_id}/sessions")
 
-    def session_probe(self, user_id: str, logout: bool = False) -> list[dict]:
+    def session_probe(self, user_id: str, logout: bool = False, deadline: float | None = None) -> list[dict]:
         """List a user's sessions over a new connection; with ``logout``, log the user out on the same one.
 
         Behind a load balancer each new TCP connection may reach a different
@@ -280,17 +280,18 @@ class KeyCloakClient:
         reach the others. The logout is sent even when that node lists nothing:
         besides removing the node's sessions it sets the user's ``notBefore`` in
         the database, which every node checks. Returns the sessions listed
-        (before the logout).
+        (before the logout). Both requests are bounded by ``deadline``
+        (:class:`DeadlineExceeded` past it).
         """
         with httpx.Client(timeout=_REQUEST_TIMEOUT) as http:
-            sessions = self._send("GET", f"/users/{user_id}/sessions", http=http).json()
+            sessions = self._send("GET", f"/users/{user_id}/sessions", http=http, deadline=deadline).json()
             if logout:
-                self._send("POST", f"/users/{user_id}/logout", http=http)
+                self._send("POST", f"/users/{user_id}/logout", http=http, deadline=deadline)
             return sessions
 
-    def get_user_not_before(self, user_id: str) -> int:
+    def get_user_not_before(self, user_id: str, deadline: float | None = None) -> int:
         """The user's ``notBefore`` (epoch seconds; 0 when never set): tokens issued before it are rejected."""
-        return int(self._get(f"/users/{user_id}").get("notBefore") or 0)
+        return int(self._get(f"/users/{user_id}", deadline=deadline).get("notBefore") or 0)
 
     def logout_user(self, user_id: str) -> int:
         """Remove all sessions for a user (force logout).

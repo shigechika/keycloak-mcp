@@ -131,7 +131,7 @@ pip install -e .
 | `KEYCLOAK_GROUP_DEADLINE` | グループ変更ツールの実時間バジェット（秒）。30 名のバッチは既定の 45 秒では足りない。前段に ~60 秒のタイムアウトが無い配備（サーバを直接起動するクライアントなど）で長くする。未設定なら `KEYCLOAK_DEADLINE` | *未設定* |
 | `KEYCLOAK_SESSION_PROBES` | `get_user_sessions`（と `set_user_enabled` が数える残りのセッション）で、別々の接続で取った一覧を重ねる回数。ロードバランサの後ろで、セッションを共有しない KeyCloak の各台（Infinispan の分散キャッシュ無し）は自分の分しか返さない | `8` |
 | `KEYCLOAK_LOGOUT_CLEAN_PROBES` | `logout_user` は、接続ごとにセッションを一覧し、届いた台でログアウトする試行を、続けてこの回数セッションが見えなくなるまで繰り返す。ログアウトは毎回送る。データベースのユーザーの `notBefore` も書かれ、全台がそれを見るので、ツールはその時刻も返す | `10` |
-| `KEYCLOAK_LOGOUT_MAX_PROBES` | `logout_user` の試行の上限。上限でまだセッションが見えるときは成功と言わず ⚠️ で伝える | `40` |
+| `KEYCLOAK_LOGOUT_MAX_PROBES` | `logout_user` の試行の上限。上限でまだセッションが見えるときは成功と言わず ⚠️ で伝える。試行は `get_user_sessions`・`set_user_enabled` のセッション一覧と同じく `KEYCLOAK_DEADLINE` で打ち切り、打ち切ったときは確認が終わっていないことを ⚠️ で伝える | `40` |
 
 ### KeyCloak 側のクライアント設定
 
