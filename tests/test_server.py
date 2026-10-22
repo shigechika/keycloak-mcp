@@ -7,6 +7,7 @@ from unittest.mock import ANY, patch
 import httpx
 
 from keycloak_mcp import server
+from keycloak_mcp.client import DeadlineExceeded
 
 
 def _ev(items, truncated=False):
@@ -1085,23 +1086,116 @@ class TestGetRealmSecurityDefenses:
 
 
 class TestLogoutUser:
+    SESSION = {"id": "s1", "clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+
     @patch.object(server, "_kc")
     def test_success(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
-            {"clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
-        ]
-        mock.return_value.logout_user.return_value = 204
+        mock.return_value.session_probe.side_effect = [[self.SESSION]] + [[]] * 10
+        mock.return_value.get_user_not_before.return_value = 1700000000
         result = server.logout_user("alice@example.com")
-        assert "Logged out" in result
-        assert "1 session(s)" in result
+        assert "Logged out" in result and "1 session(s)" in result and "tokens issued before" in result
+        assert mock.return_value.session_probe.call_count == 11
+        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True, force=False, deadline=ANY)
+
+    @patch.object(server, "_kc")
+    def test_an_empty_first_listing_does_not_stop_it(self, mock):
+        # Node A holds no session, node B does: the session is found on a later probe.
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = [[], [], [self.SESSION]] + [[]] * 10
+        result = server.logout_user("alice@example.com")
+        assert "Logged out" in result and "1 session(s)" in result
+        assert mock.return_value.session_probe.call_count == 13
+
+    @patch.object(server, "_kc")
+    def test_the_same_session_on_two_probes_counts_once(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = [[self.SESSION], [self.SESSION]] + [[]] * 10
+        assert "1 session(s)" in server.logout_user("alice@example.com")
 
     @patch.object(server, "_kc")
     def test_no_sessions(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = []
+        mock.return_value.session_probe.return_value = []
+        mock.return_value.get_user_not_before.return_value = 0
         result = server.logout_user("alice@example.com")
-        assert "nothing to do" in result
+        assert "no session seen on 10 probe(s)" in result and "notBefore not set" in result
+        assert mock.return_value.session_probe.call_count == 10
+        mock.return_value.session_probe.assert_called_with(
+            SAMPLE_USER["id"], logout=True, force=False, deadline=ANY
+        )  # sent even so
+
+    @patch.object(server, "_kc")
+    def test_sessions_still_seen_at_the_limit_are_reported(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_LOGOUT_MAX_PROBES", "12")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.return_value = [self.SESSION]
+        result = server.logout_user("alice@example.com")
+        assert "⚠️" in result and "still seen after 12 probe(s)" in result
+        assert mock.return_value.session_probe.call_count == 12
+
+    @patch.object(server, "_kc")
+    def test_time_limit_reports_incomplete_verification(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 1700000000
+        mock.return_value.session_probe.side_effect = [[self.SESSION], [], DeadlineExceeded("late")]
+        result = server.logout_user("alice@example.com")
+        assert "⚠️" in result and "time limit reached after 2 completed probe(s)" in result
+        assert "1 distinct session(s)" in result and "tokens issued before" in result
+        assert "run logout_user again" in result
+
+    @patch.object(server, "_kc")
+    def test_only_the_first_probe_forces_the_logout(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.return_value = []
+        server.logout_user("alice@example.com")
+        forced = [c.kwargs["force"] for c in mock.return_value.session_probe.call_args_list]
+        assert forced == [True] + [False] * 9
+
+    @patch.object(server, "_kc")
+    def test_a_failed_first_probe_keeps_the_next_one_forced(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = httpx.ConnectError("reset")
+        result = server.logout_user("alice@example.com")
+        assert "a request failed (ConnectError) after 0 completed probe(s)" in result
+        assert "verification incomplete" in result
+
+    @patch.object(server, "_kc")
+    def test_a_failed_request_keeps_the_progress(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 1700000000
+        resp = httpx.Response(500, request=httpx.Request("GET", "https://kc/x"))
+        err = httpx.HTTPStatusError("boom", request=resp.request, response=resp)
+        mock.return_value.session_probe.side_effect = [[self.SESSION], [], err]
+        result = server.logout_user("alice@example.com")
+        assert "a request failed (HTTPStatusError) after 2 completed probe(s)" in result
+        assert "1 distinct session(s)" in result and "tokens issued before" in result
+
+    @patch.object(server, "_kc")
+    def test_not_before_gets_a_budget_of_its_own_past_the_deadline(self, mock, monkeypatch):
+        monkeypatch.setattr(server.time, "monotonic", lambda: 100.0)
+        mock.return_value.get_user_not_before.return_value = 0
+        assert server._not_before_text("u", 99.0) == "notBefore not set"  # the shared deadline has passed
+        mock.return_value.get_user_not_before.assert_called_once_with("u", deadline=105.0)
+
+    @patch.object(server, "_kc")
+    def test_an_unreadable_not_before_is_not_reported_as_unset(self, mock):
+        mock.return_value.get_user_not_before.side_effect = DeadlineExceeded("late")
+        assert server._not_before_text("u", None) == "notBefore could not be read"
+
+    @patch.object(server, "_kc")
+    def test_past_deadline_stops_before_the_next_probe(self, mock, monkeypatch):
+        monkeypatch.setattr(server, "past_deadline", lambda d: True)
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        result = server.logout_user("alice@example.com")
+        assert "time limit reached after 0 completed probe(s)" in result
+        mock.return_value.session_probe.assert_not_called()
 
     @patch.object(server, "_kc")
     def test_user_not_found(self, mock):
@@ -1114,7 +1208,7 @@ class TestSetUserEnabled:
     @patch.object(server, "_kc")
     def test_disable(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = []
+        mock.return_value.session_probe.return_value = []
         result = server.set_user_enabled("alice@example.com", False)
         assert "enabled=False" in result
         mock.return_value.set_user_enabled.assert_called_once_with(SAMPLE_USER["id"], False)
@@ -1122,12 +1216,20 @@ class TestSetUserEnabled:
     @patch.object(server, "_kc")
     def test_disable_warns_active_sessions(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
+        mock.return_value.session_probe.return_value = [
             {"clients": {"c1": "app"}, "start": 1700000, "ipAddress": "10.0.0.1"}
         ]
         result = server.set_user_enabled("alice@example.com", False)
         assert "1 active session(s) remain" in result
         assert "logout_user" in result
+
+    @patch.object(server, "_kc")
+    def test_disable_flags_an_incomplete_session_check(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.session_probe.side_effect = DeadlineExceeded("late")
+        result = server.set_user_enabled("alice@example.com", False)
+        assert result.startswith("Set alice@example.com enabled=False")
+        assert "stopped early" in result and "sessions may remain" in result
 
     @patch.object(server, "_kc")
     def test_no_change_skips_write(self, mock):
@@ -1276,7 +1378,7 @@ class TestGetUserSessionsFormatted:
     @patch.object(server, "_kc")
     def test_formatted_output(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
+        mock.return_value.session_probe.return_value = [
             {"clients": {"c1": "xflow", "c2": "zabbix"}, "start": 1700000, "ipAddress": "10.0.0.1"}
         ]
         result = server.get_user_sessions("alice@example.com")
@@ -1284,6 +1386,24 @@ class TestGetUserSessionsFormatted:
         assert "zabbix" in result
         # Should show formatted timestamp, not raw epoch
         assert "1700000000" not in result
+
+    @patch.object(server, "_kc")
+    def test_sessions_held_by_different_nodes_are_merged(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        a = {"id": "a", "clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+        b = {"id": "b", "clients": {"c2": "zabbix"}, "start": 1700100, "ipAddress": "10.0.0.2"}
+        mock.return_value.session_probe.side_effect = [[a], [], [b], [a], [], [], [], []]
+        result = server.get_user_sessions("alice@example.com")
+        assert "Active sessions for alice@example.com: 2" in result
+        assert mock.return_value.session_probe.call_count == 8
+
+    @patch.object(server, "_kc")
+    def test_time_limit_marks_the_list_incomplete(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        a = {"id": "a", "clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+        mock.return_value.session_probe.side_effect = [[a], DeadlineExceeded("late")]
+        result = server.get_user_sessions("alice@example.com")
+        assert "Active sessions for alice@example.com: 1" in result and "may be incomplete" in result
 
 
 class TestLabelIp:

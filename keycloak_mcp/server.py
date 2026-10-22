@@ -13,10 +13,12 @@ import os
 import secrets
 import string
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
@@ -123,6 +125,54 @@ def _positive_int_env(name: str, default: int) -> int | None:
     except ValueError:
         val = default
     return val if val > 0 else None
+
+
+_SESSION_PROBES_DEFAULT = 8
+_NOT_BEFORE_READ_SECONDS = 5
+_LOGOUT_CLEAN_PROBES_DEFAULT = 10
+_LOGOUT_MAX_PROBES_DEFAULT = 40
+
+
+def _session_probes() -> int:
+    """Probes merged when listing a user's sessions (KEYCLOAK_SESSION_PROBES, default 8, at least 1)."""
+    return _positive_int_env("KEYCLOAK_SESSION_PROBES", _SESSION_PROBES_DEFAULT) or 1
+
+
+def _logout_probes() -> tuple[int, int]:
+    """(clean probes in a row that end a logout, most probes) for logout_user.
+
+    KEYCLOAK_LOGOUT_CLEAN_PROBES (default 10) and KEYCLOAK_LOGOUT_MAX_PROBES
+    (default 40); each is at least 1 and the maximum is at least the clean run.
+    """
+    clean = _positive_int_env("KEYCLOAK_LOGOUT_CLEAN_PROBES", _LOGOUT_CLEAN_PROBES_DEFAULT) or 1
+    most = _positive_int_env("KEYCLOAK_LOGOUT_MAX_PROBES", _LOGOUT_MAX_PROBES_DEFAULT) or clean
+    return clean, max(clean, most)
+
+
+def _session_key(s: dict) -> str:
+    """A session's identity across probes: its id, or its start, address and user when there is none."""
+    return str(s.get("id") or (s.get("start"), s.get("ipAddress"), s.get("userId")))
+
+
+def _merged_sessions(user_id: str, deadline: float | None = None) -> tuple[list[dict], bool]:
+    """A user's sessions merged over several probes (each on its own connection, see session_probe).
+
+    Bounded by ``deadline`` (default: KEYCLOAK_DEADLINE from now); returns (sessions, complete),
+    complete False when the time ran out or a request failed before every probe was made.
+    """
+    if deadline is None:
+        deadline = deadline_after(_deadline_seconds())
+    merged: dict[str, dict] = {}
+    for _ in range(_session_probes()):
+        if past_deadline(deadline):
+            return list(merged.values()), False
+        try:
+            found = _kc().session_probe(user_id, deadline=deadline)
+        except (DeadlineExceeded, httpx.HTTPError):
+            return list(merged.values()), False
+        for sess in found:
+            merged.setdefault(_session_key(sess), sess)
+    return list(merged.values()), True
 
 
 def _max_events() -> int | None:
@@ -769,16 +819,23 @@ def _random_password(length: int = 12) -> str:
 def get_user_sessions(username: str) -> str:
     """Get active sessions for a user.
 
+    Sessions are listed over several separate connections and merged, because
+    behind a load balancer a KeyCloak node that does not share sessions with the
+    others lists only its own (KEYCLOAK_SESSION_PROBES, default 8).
+
     Args:
         username: Exact username (email).
     """
     u, err = _resolve_user(username)
     if err:
         return err
-    sessions = _kc().get_user_sessions(u["id"])
+    sessions, complete = _merged_sessions(u["id"])
+    partial = (
+        "" if complete else " (⚠️ stopped early, by the time limit or a failed request — the list may be incomplete)"
+    )
     if not sessions:
-        return f"No active sessions for {username}"
-    lines = [f"Active sessions for {username}: {len(sessions)}"]
+        return f"No active sessions for {username}{partial}"
+    lines = [f"Active sessions for {username}: {len(sessions)}{partial}"]
     for s in sessions:
         clients = s.get("clients", {})
         client_names = ", ".join(clients.values()) if clients else "none"
@@ -794,17 +851,81 @@ def get_user_sessions(username: str) -> str:
 def logout_user(username: str) -> str:
     """Force logout a user by removing all their active sessions.
 
+    Each probe opens its own connection, lists the user's sessions and logs the
+    user out on the node it reached when that node lists a session. Until one
+    logout has gone through it is sent even when the node lists nothing: it also
+    sets the user's ``notBefore`` in the database, so tokens issued before it are
+    rejected by every node. Probing goes
+    on until no session is seen on KEYCLOAK_LOGOUT_CLEAN_PROBES probes in a row
+    (default 10), at most KEYCLOAK_LOGOUT_MAX_PROBES (default 40), so that nodes
+    that do not share sessions behind a load balancer are all reached. The
+    resulting ``notBefore`` is reported. The whole run is bounded by
+    KEYCLOAK_DEADLINE; when it runs out or a request fails, the result says
+    verification is incomplete, with what was done so far.
+
     Args:
         username: Exact username (email).
     """
     u, err = _resolve_user(username)
     if err:
         return err
-    sessions = _kc().get_user_sessions(u["id"])
-    if not sessions:
-        return f"No active sessions for {username} — nothing to do"
-    _kc().logout_user(u["id"])
-    return f"Logged out {username} ({len(sessions)} session(s) removed)"
+    clean_needed, most = _logout_probes()
+    deadline = deadline_after(_deadline_seconds())
+    removed: dict[str, dict] = {}
+    probes = clean = 0
+    sent = False
+    stopped = ""
+    while probes < most and clean < clean_needed:
+        if past_deadline(deadline):
+            stopped = "time limit reached"
+            break
+        try:
+            found = _kc().session_probe(u["id"], logout=True, force=not sent, deadline=deadline)
+        except DeadlineExceeded:
+            stopped = "time limit reached"
+            break
+        except httpx.HTTPError as exc:
+            stopped = f"a request failed ({type(exc).__name__})"
+            break
+        probes += 1
+        sent = True  # this probe was forced or followed one that was; session_probe raises if the logout failed
+        if found:
+            clean = 0
+            for sess in found:
+                removed.setdefault(_session_key(sess), sess)
+        else:
+            clean += 1
+    cutoff = _not_before_text(u["id"], deadline)
+    if stopped:
+        return (
+            f"⚠️ {username}: {stopped} after {probes} completed probe(s) "
+            f"({len(removed)} distinct session(s) logged out so far; {cutoff}) — "
+            "verification incomplete, run logout_user again"
+        )
+    if clean < clean_needed:
+        return (
+            f"⚠️ {username}: sessions were still seen after {probes} probe(s) "
+            f"({len(removed)} distinct session(s) logged out so far; {cutoff}) — run logout_user again"
+        )
+    if not removed:
+        return f"Logged out {username}: no session seen on {probes} probe(s); {cutoff}"
+    return (
+        f"Logged out {username} ({len(removed)} session(s) removed; "
+        f"none seen on the last {clean_needed} of {probes} probe(s); {cutoff})"
+    )
+
+
+def _not_before_text(user_id: str, deadline: float | None) -> str:
+    """The user's notBefore as result text, read within ``deadline`` or a short budget of its own past it."""
+    if deadline is not None and deadline - time.monotonic() < _NOT_BEFORE_READ_SECONDS:
+        deadline = deadline_after(_NOT_BEFORE_READ_SECONDS)
+    try:
+        not_before = _kc().get_user_not_before(user_id, deadline=deadline)
+    except (DeadlineExceeded, httpx.HTTPError):
+        return "notBefore could not be read"
+    if not not_before:
+        return "notBefore not set"
+    return f"tokens issued before {_format_ts(not_before * 1000)} are rejected"
 
 
 @mcp.tool()
@@ -823,6 +944,7 @@ def set_user_enabled(username: str, enabled: bool) -> str:
         username: Exact username (email).
         enabled: True to enable, False to disable.
     """
+    deadline = deadline_after(_deadline_seconds())
     u, err = _resolve_user(username)
     if err:
         return err
@@ -831,9 +953,11 @@ def set_user_enabled(username: str, enabled: bool) -> str:
     _kc().set_user_enabled(u["id"], enabled)
     msg = f"Set {username} enabled={enabled}"
     if not enabled:
-        sessions = _kc().get_user_sessions(u["id"])
+        sessions, complete = _merged_sessions(u["id"], deadline)
         if sessions:
             msg += f"; {len(sessions)} active session(s) remain — run logout_user to terminate them"
+        if not complete:
+            msg += "; ⚠️ the session check stopped early — sessions may remain, run logout_user"
     return msg
 
 

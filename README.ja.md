@@ -129,6 +129,9 @@ pip install -e .
 | `KEYCLOAK_GROUP_MODE` | `multi`（KeyCloak の既定。ユーザーは複数のグループに所属できる）または `single`（グループに追加すると他の所属がすべて外れる配備。所属を 1 つに保つイベントリスナーなど）。それ以外の値ではグループ変更ツールを無効にする | `multi` |
 | `KEYCLOAK_STATE_DIR` | 設定の日次スナップショットを置くディレクトリ（`<dir>/config-snapshots`、ディレクトリは 0700、ファイルは 0600 で作る）。未設定ならスナップショットは取らず、`daily_brief` は設定に関わる管理操作だけを出す。「設定のスナップショット」参照 | *未設定* |
 | `KEYCLOAK_GROUP_DEADLINE` | グループ変更ツールの実時間バジェット（秒）。30 名のバッチは既定の 45 秒では足りない。前段に ~60 秒のタイムアウトが無い配備（サーバを直接起動するクライアントなど）で長くする。未設定なら `KEYCLOAK_DEADLINE` | *未設定* |
+| `KEYCLOAK_SESSION_PROBES` | `get_user_sessions`（と `set_user_enabled` が数える残りのセッション）で、別々の接続で取った一覧を重ねる回数。ロードバランサの後ろで、セッションを共有しない KeyCloak の各台（Infinispan の分散キャッシュ無し）は自分の分しか返さない | `8` |
+| `KEYCLOAK_LOGOUT_CLEAN_PROBES` | `logout_user` は、接続ごとにセッションを一覧し、届いた台にセッションがあればそこでログアウトする試行を、続けてこの回数セッションが見えなくなるまで繰り返す。最初の試行は一覧が空でもログアウトを送る。データベースのユーザーの `notBefore` も書かれ、全台がそれを見るので、ツールはその時刻も返す。新しい接続がどの台へ届くかはロードバランサ次第で、送信元 IP で振り分ける設定では届かない台が残りうる。全台に効くのは `notBefore` のほう。セッションを共有している構成では、これと `KEYCLOAK_SESSION_PROBES` を `1` にする | `10` |
+| `KEYCLOAK_LOGOUT_MAX_PROBES` | `logout_user` の試行の上限。上限でまだセッションが見えるときは成功と言わず ⚠️ で伝える。試行は `get_user_sessions`・`set_user_enabled` のセッション一覧と同じく `KEYCLOAK_DEADLINE` で打ち切り、打ち切ったときや要求が失敗したときは、確認が終わっていないことと、そこまでにしたことを ⚠️ で伝える | `40` |
 
 ### KeyCloak 側のクライアント設定
 
@@ -145,7 +148,7 @@ pip install -e .
 | `reset_password` | `PUT /users/{id}/reset-password` |
 | `reset_passwords_batch` | 同じ呼び出しを CSV の行数だけ繰り返す |
 | `set_user_enabled` | `enabled` を変えて `PUT /users/{id}` |
-| `logout_user` | `POST /users/{id}/logout` |
+| `logout_user` | `GET /users/{id}/sessions` と `POST /users/{id}/logout` を新しい接続で繰り返す（`KEYCLOAK_LOGOUT_CLEAN_PROBES`） |
 
 4 つとも Service Account の `manage-users` が要ります。**このロールを付けなければ
 読み取り専用**になり、上記 4 つだけが `403` で失敗して残りのツールはそのまま動きます。
