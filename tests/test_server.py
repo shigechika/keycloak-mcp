@@ -1096,7 +1096,7 @@ class TestLogoutUser:
         result = server.logout_user("alice@example.com")
         assert "Logged out" in result and "1 session(s)" in result and "tokens issued before" in result
         assert mock.return_value.session_probe.call_count == 11
-        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True, deadline=ANY)
+        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True, force=False, deadline=ANY)
 
     @patch.object(server, "_kc")
     def test_an_empty_first_listing_does_not_stop_it(self, mock):
@@ -1123,7 +1123,9 @@ class TestLogoutUser:
         result = server.logout_user("alice@example.com")
         assert "no session seen on 10 probe(s)" in result and "notBefore not set" in result
         assert mock.return_value.session_probe.call_count == 10
-        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True, deadline=ANY)  # sent even so
+        mock.return_value.session_probe.assert_called_with(
+            SAMPLE_USER["id"], logout=True, force=False, deadline=ANY
+        )  # sent even so
 
     @patch.object(server, "_kc")
     def test_sessions_still_seen_at_the_limit_are_reported(self, mock, monkeypatch):
@@ -1144,8 +1146,47 @@ class TestLogoutUser:
         assert "⚠️" in result and "time limit reached after 2 completed probe(s)" in result
         assert "1 distinct session(s)" in result and "tokens issued before" in result
         assert "run logout_user again" in result
-        # notBefore is still read, without the expired deadline
-        mock.return_value.get_user_not_before.assert_called_once_with(SAMPLE_USER["id"], deadline=None)
+
+    @patch.object(server, "_kc")
+    def test_only_the_first_probe_forces_the_logout(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.return_value = []
+        server.logout_user("alice@example.com")
+        forced = [c.kwargs["force"] for c in mock.return_value.session_probe.call_args_list]
+        assert forced == [True] + [False] * 9
+
+    @patch.object(server, "_kc")
+    def test_a_failed_first_probe_keeps_the_next_one_forced(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = httpx.ConnectError("reset")
+        result = server.logout_user("alice@example.com")
+        assert "a request failed (ConnectError) after 0 completed probe(s)" in result
+        assert "verification incomplete" in result
+
+    @patch.object(server, "_kc")
+    def test_a_failed_request_keeps_the_progress(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 1700000000
+        resp = httpx.Response(500, request=httpx.Request("GET", "https://kc/x"))
+        err = httpx.HTTPStatusError("boom", request=resp.request, response=resp)
+        mock.return_value.session_probe.side_effect = [[self.SESSION], [], err]
+        result = server.logout_user("alice@example.com")
+        assert "a request failed (HTTPStatusError) after 2 completed probe(s)" in result
+        assert "1 distinct session(s)" in result and "tokens issued before" in result
+
+    @patch.object(server, "_kc")
+    def test_not_before_gets_a_budget_of_its_own_past_the_deadline(self, mock, monkeypatch):
+        monkeypatch.setattr(server.time, "monotonic", lambda: 100.0)
+        mock.return_value.get_user_not_before.return_value = 0
+        assert server._not_before_text("u", 99.0) == "notBefore not set"  # the shared deadline has passed
+        mock.return_value.get_user_not_before.assert_called_once_with("u", deadline=105.0)
+
+    @patch.object(server, "_kc")
+    def test_an_unreadable_not_before_is_not_reported_as_unset(self, mock):
+        mock.return_value.get_user_not_before.side_effect = DeadlineExceeded("late")
+        assert server._not_before_text("u", None) == "notBefore could not be read"
 
     @patch.object(server, "_kc")
     def test_past_deadline_stops_before_the_next_probe(self, mock, monkeypatch):
@@ -1181,6 +1222,14 @@ class TestSetUserEnabled:
         result = server.set_user_enabled("alice@example.com", False)
         assert "1 active session(s) remain" in result
         assert "logout_user" in result
+
+    @patch.object(server, "_kc")
+    def test_disable_flags_an_incomplete_session_check(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.session_probe.side_effect = DeadlineExceeded("late")
+        result = server.set_user_enabled("alice@example.com", False)
+        assert result.startswith("Set alice@example.com enabled=False")
+        assert "stopped early" in result and "sessions may remain" in result
 
     @patch.object(server, "_kc")
     def test_no_change_skips_write(self, mock):

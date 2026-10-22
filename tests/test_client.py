@@ -637,11 +637,17 @@ class TestSessionProbe:
         assert listed.called and logout.called
         assert len(made) == 1 and made[0].is_closed  # one short-lived connection, not the shared keep-alive one
 
-    def test_logout_is_sent_even_when_the_node_lists_nothing(self, mock_api):
+    def test_forced_logout_is_sent_even_when_the_node_lists_nothing(self, mock_api):
+        mock_api.get(f"{ADMIN_BASE}/users/u1/sessions").mock(return_value=httpx.Response(200, json=[]))
+        logout = mock_api.post(f"{ADMIN_BASE}/users/u1/logout").mock(return_value=httpx.Response(204))
+        assert KeyCloakClient().session_probe("u1", logout=True, force=True) == []
+        assert logout.called  # it also sets notBefore, which every node checks
+
+    def test_unforced_logout_is_skipped_when_the_node_lists_nothing(self, mock_api):
         mock_api.get(f"{ADMIN_BASE}/users/u1/sessions").mock(return_value=httpx.Response(200, json=[]))
         logout = mock_api.post(f"{ADMIN_BASE}/users/u1/logout").mock(return_value=httpx.Response(204))
         assert KeyCloakClient().session_probe("u1", logout=True) == []
-        assert logout.called  # it also sets notBefore, which every node checks
+        assert not logout.called
 
     def test_listing_only_sends_no_logout(self, mock_api):
         mock_api.get(f"{ADMIN_BASE}/users/u1/sessions").mock(return_value=httpx.Response(200, json=[{"id": "s"}]))
@@ -654,14 +660,6 @@ class TestSessionProbe:
             return_value=httpx.Response(200, json={"id": "u1", "notBefore": 1700000000})
         )
         assert KeyCloakClient().get_user_not_before("u1") == 1700000000
-
-
-class TestLogoutUser:
-    def test_success(self, mock_api):
-        route = mock_api.post(f"{ADMIN_BASE}/users/user-uuid-1/logout").mock(return_value=httpx.Response(204))
-        status = KeyCloakClient().logout_user("user-uuid-1")
-        assert status == 204
-        assert route.called
 
 
 class TestGetEventsWithClientId:
