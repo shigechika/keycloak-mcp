@@ -125,6 +125,41 @@ def _positive_int_env(name: str, default: int) -> int | None:
     return val if val > 0 else None
 
 
+_SESSION_PROBES_DEFAULT = 8
+_LOGOUT_CLEAN_PROBES_DEFAULT = 10
+_LOGOUT_MAX_PROBES_DEFAULT = 40
+
+
+def _session_probes() -> int:
+    """Probes merged when listing a user's sessions (KEYCLOAK_SESSION_PROBES, default 8, at least 1)."""
+    return _positive_int_env("KEYCLOAK_SESSION_PROBES", _SESSION_PROBES_DEFAULT) or 1
+
+
+def _logout_probes() -> tuple[int, int]:
+    """(clean probes in a row that end a logout, most probes) for logout_user.
+
+    KEYCLOAK_LOGOUT_CLEAN_PROBES (default 10) and KEYCLOAK_LOGOUT_MAX_PROBES
+    (default 40); each is at least 1 and the maximum is at least the clean run.
+    """
+    clean = _positive_int_env("KEYCLOAK_LOGOUT_CLEAN_PROBES", _LOGOUT_CLEAN_PROBES_DEFAULT) or 1
+    most = _positive_int_env("KEYCLOAK_LOGOUT_MAX_PROBES", _LOGOUT_MAX_PROBES_DEFAULT) or clean
+    return clean, max(clean, most)
+
+
+def _session_key(s: dict) -> str:
+    """A session's identity across probes: its id, or its start, address and user when there is none."""
+    return str(s.get("id") or (s.get("start"), s.get("ipAddress"), s.get("userId")))
+
+
+def _merged_sessions(user_id: str) -> list[dict]:
+    """A user's sessions merged over several probes (each on its own connection, see session_probe)."""
+    merged: dict[str, dict] = {}
+    for _ in range(_session_probes()):
+        for sess in _kc().session_probe(user_id):
+            merged.setdefault(_session_key(sess), sess)
+    return list(merged.values())
+
+
 def _max_events() -> int | None:
     """Per-pagination cap on events fetched (KEYCLOAK_MAX_EVENTS, default 200000; 0/negative
     disables the count cap and relies on the deadline alone)."""
@@ -769,13 +804,17 @@ def _random_password(length: int = 12) -> str:
 def get_user_sessions(username: str) -> str:
     """Get active sessions for a user.
 
+    Sessions are listed over several separate connections and merged, because
+    behind a load balancer a KeyCloak node that does not share sessions with the
+    others lists only its own (KEYCLOAK_SESSION_PROBES, default 8).
+
     Args:
         username: Exact username (email).
     """
     u, err = _resolve_user(username)
     if err:
         return err
-    sessions = _kc().get_user_sessions(u["id"])
+    sessions = _merged_sessions(u["id"])
     if not sessions:
         return f"No active sessions for {username}"
     lines = [f"Active sessions for {username}: {len(sessions)}"]
@@ -794,17 +833,46 @@ def get_user_sessions(username: str) -> str:
 def logout_user(username: str) -> str:
     """Force logout a user by removing all their active sessions.
 
+    Each probe opens its own connection, lists the user's sessions and logs the
+    user out on the node it reached. The logout is sent on every probe, even when
+    that node lists nothing: it also sets the user's ``notBefore`` in the
+    database, so tokens issued before it are rejected by every node. Probing goes
+    on until no session is seen on KEYCLOAK_LOGOUT_CLEAN_PROBES probes in a row
+    (default 10), at most KEYCLOAK_LOGOUT_MAX_PROBES (default 40), so that nodes
+    that do not share sessions behind a load balancer are all reached. The
+    resulting ``notBefore`` is reported.
+
     Args:
         username: Exact username (email).
     """
     u, err = _resolve_user(username)
     if err:
         return err
-    sessions = _kc().get_user_sessions(u["id"])
-    if not sessions:
-        return f"No active sessions for {username} — nothing to do"
-    _kc().logout_user(u["id"])
-    return f"Logged out {username} ({len(sessions)} session(s) removed)"
+    clean_needed, most = _logout_probes()
+    removed: dict[str, dict] = {}
+    probes = clean = 0
+    while probes < most and clean < clean_needed:
+        probes += 1
+        found = _kc().session_probe(u["id"], logout=True)
+        if found:
+            clean = 0
+            for sess in found:
+                removed.setdefault(_session_key(sess), sess)
+        else:
+            clean += 1
+    not_before = _kc().get_user_not_before(u["id"])
+    cutoff = f"tokens issued before {_format_ts(not_before * 1000)} are rejected" if not_before else "notBefore not set"
+    if clean < clean_needed:
+        return (
+            f"⚠️ {username}: sessions were still seen after {probes} probe(s) "
+            f"({len(removed)} distinct session(s) logged out so far; {cutoff}) — run logout_user again"
+        )
+    if not removed:
+        return f"Logged out {username}: no session seen on {probes} probe(s); {cutoff}"
+    return (
+        f"Logged out {username} ({len(removed)} session(s) removed; "
+        f"none seen on the last {clean_needed} of {probes} probe(s); {cutoff})"
+    )
 
 
 @mcp.tool()
@@ -831,7 +899,7 @@ def set_user_enabled(username: str, enabled: bool) -> str:
     _kc().set_user_enabled(u["id"], enabled)
     msg = f"Set {username} enabled={enabled}"
     if not enabled:
-        sessions = _kc().get_user_sessions(u["id"])
+        sessions = _merged_sessions(u["id"])
         if sessions:
             msg += f"; {len(sessions)} active session(s) remain — run logout_user to terminate them"
     return msg

@@ -56,6 +56,7 @@ class KeyCloakClient:
         params: dict | None = None,
         json: dict | None = None,
         deadline: float | None = None,
+        http: httpx.Client | None = None,
     ) -> httpx.Response:
         """Send a request with retry on transient failures.
 
@@ -75,6 +76,9 @@ class KeyCloakClient:
         obtained), and no attempt or
         backoff starts past it: :class:`DeadlineExceeded` is raised instead, so one
         slow page cannot run a tool far beyond its budget.
+
+        ``http`` sends over that client instead of the shared keep-alive one
+        (see :meth:`session_probe`).
         """
         url = f"{self.auth.admin_base}{path}"
         last_exc: Exception | None = None
@@ -96,7 +100,7 @@ class KeyCloakClient:
                     if remaining <= 0:
                         raise DeadlineExceeded(f"deadline passed before {method} {path}") from last_exc
                     timeout = min(_REQUEST_TIMEOUT, max(remaining, _MIN_REQUEST_TIMEOUT))
-                resp = self._http.request(
+                resp = (http or self._http).request(
                     method,
                     url,
                     headers=headers,
@@ -263,6 +267,30 @@ class KeyCloakClient:
     def get_user_sessions(self, user_id: str) -> list[dict]:
         """Get active sessions for a user."""
         return self._get(f"/users/{user_id}/sessions")
+
+    def session_probe(self, user_id: str, logout: bool = False) -> list[dict]:
+        """List a user's sessions over a new connection; with ``logout``, log the user out on the same one.
+
+        Behind a load balancer each new TCP connection may reach a different
+        KeyCloak node, and nodes that do not share user sessions (no distributed
+        Infinispan cache) list and log out only the sessions they hold. The
+        shared client keeps one connection alive, so it would keep asking the
+        same node. A short-lived client gives each probe its own connection:
+        the listing and the logout reach the same node, and repeated probes can
+        reach the others. The logout is sent even when that node lists nothing:
+        besides removing the node's sessions it sets the user's ``notBefore`` in
+        the database, which every node checks. Returns the sessions listed
+        (before the logout).
+        """
+        with httpx.Client(timeout=_REQUEST_TIMEOUT) as http:
+            sessions = self._send("GET", f"/users/{user_id}/sessions", http=http).json()
+            if logout:
+                self._send("POST", f"/users/{user_id}/logout", http=http)
+            return sessions
+
+    def get_user_not_before(self, user_id: str) -> int:
+        """The user's ``notBefore`` (epoch seconds; 0 when never set): tokens issued before it are rejected."""
+        return int(self._get(f"/users/{user_id}").get("notBefore") or 0)
 
     def logout_user(self, user_id: str) -> int:
         """Remove all sessions for a user (force logout).

@@ -1085,23 +1085,54 @@ class TestGetRealmSecurityDefenses:
 
 
 class TestLogoutUser:
+    SESSION = {"id": "s1", "clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+
     @patch.object(server, "_kc")
     def test_success(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
-            {"clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
-        ]
-        mock.return_value.logout_user.return_value = 204
+        mock.return_value.session_probe.side_effect = [[self.SESSION]] + [[]] * 10
+        mock.return_value.get_user_not_before.return_value = 1700000000
         result = server.logout_user("alice@example.com")
-        assert "Logged out" in result
-        assert "1 session(s)" in result
+        assert "Logged out" in result and "1 session(s)" in result and "tokens issued before" in result
+        assert mock.return_value.session_probe.call_count == 11
+        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True)
+
+    @patch.object(server, "_kc")
+    def test_an_empty_first_listing_does_not_stop_it(self, mock):
+        # Node A holds no session, node B does: the session is found on a later probe.
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = [[], [], [self.SESSION]] + [[]] * 10
+        result = server.logout_user("alice@example.com")
+        assert "Logged out" in result and "1 session(s)" in result
+        assert mock.return_value.session_probe.call_count == 13
+
+    @patch.object(server, "_kc")
+    def test_the_same_session_on_two_probes_counts_once(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.side_effect = [[self.SESSION], [self.SESSION]] + [[]] * 10
+        assert "1 session(s)" in server.logout_user("alice@example.com")
 
     @patch.object(server, "_kc")
     def test_no_sessions(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = []
+        mock.return_value.session_probe.return_value = []
+        mock.return_value.get_user_not_before.return_value = 0
         result = server.logout_user("alice@example.com")
-        assert "nothing to do" in result
+        assert "no session seen on 10 probe(s)" in result and "notBefore not set" in result
+        assert mock.return_value.session_probe.call_count == 10
+        mock.return_value.session_probe.assert_called_with(SAMPLE_USER["id"], logout=True)  # sent even so
+
+    @patch.object(server, "_kc")
+    def test_sessions_still_seen_at_the_limit_are_reported(self, mock, monkeypatch):
+        monkeypatch.setenv("KEYCLOAK_LOGOUT_MAX_PROBES", "12")
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        mock.return_value.get_user_not_before.return_value = 0
+        mock.return_value.session_probe.return_value = [self.SESSION]
+        result = server.logout_user("alice@example.com")
+        assert "⚠️" in result and "still seen after 12 probe(s)" in result
+        assert mock.return_value.session_probe.call_count == 12
 
     @patch.object(server, "_kc")
     def test_user_not_found(self, mock):
@@ -1114,7 +1145,7 @@ class TestSetUserEnabled:
     @patch.object(server, "_kc")
     def test_disable(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = []
+        mock.return_value.session_probe.return_value = []
         result = server.set_user_enabled("alice@example.com", False)
         assert "enabled=False" in result
         mock.return_value.set_user_enabled.assert_called_once_with(SAMPLE_USER["id"], False)
@@ -1122,7 +1153,7 @@ class TestSetUserEnabled:
     @patch.object(server, "_kc")
     def test_disable_warns_active_sessions(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
+        mock.return_value.session_probe.return_value = [
             {"clients": {"c1": "app"}, "start": 1700000, "ipAddress": "10.0.0.1"}
         ]
         result = server.set_user_enabled("alice@example.com", False)
@@ -1276,7 +1307,7 @@ class TestGetUserSessionsFormatted:
     @patch.object(server, "_kc")
     def test_formatted_output(self, mock):
         mock.return_value.get_user_by_username.return_value = SAMPLE_USER
-        mock.return_value.get_user_sessions.return_value = [
+        mock.return_value.session_probe.return_value = [
             {"clients": {"c1": "xflow", "c2": "zabbix"}, "start": 1700000, "ipAddress": "10.0.0.1"}
         ]
         result = server.get_user_sessions("alice@example.com")
@@ -1284,6 +1315,16 @@ class TestGetUserSessionsFormatted:
         assert "zabbix" in result
         # Should show formatted timestamp, not raw epoch
         assert "1700000000" not in result
+
+    @patch.object(server, "_kc")
+    def test_sessions_held_by_different_nodes_are_merged(self, mock):
+        mock.return_value.get_user_by_username.return_value = SAMPLE_USER
+        a = {"id": "a", "clients": {"c1": "xflow"}, "start": 1700000, "ipAddress": "10.0.0.1"}
+        b = {"id": "b", "clients": {"c2": "zabbix"}, "start": 1700100, "ipAddress": "10.0.0.2"}
+        mock.return_value.session_probe.side_effect = [[a], [], [b], [a], [], [], [], []]
+        result = server.get_user_sessions("alice@example.com")
+        assert "Active sessions for alice@example.com: 2" in result
+        assert mock.return_value.session_probe.call_count == 8
 
 
 class TestLabelIp:

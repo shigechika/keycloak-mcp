@@ -133,6 +133,9 @@ pip install -e .
 | `KEYCLOAK_GROUP_MODE` | `multi` (KeyCloak's default: a user can be in many groups) or `single` for a deployment where adding a group replaces every other membership (for example an event listener that keeps one group per user). Any other value disables the group tools. See *Group changes*. | `multi` |
 | `KEYCLOAK_STATE_DIR` | Directory for the daily configuration snapshots (`<dir>/config-snapshots`, created 0700, files 0600). Unset: no snapshots; `daily_brief` still reports configuration admin events. See *Configuration snapshots*. | *unset* |
 | `KEYCLOAK_GROUP_DEADLINE` | Time budget (seconds) for the group-change tools. A batch of 30 users needs more than the default 45 s; raise it where nothing with a ~60 s timeout sits in front of the server (for example a client that spawns it directly). Unset: `KEYCLOAK_DEADLINE`. | *unset* |
+| `KEYCLOAK_SESSION_PROBES` | Separate connections whose session listings `get_user_sessions` (and the remaining-session count of `set_user_enabled`) merges. Behind a load balancer, KeyCloak nodes that do not share user sessions (no distributed Infinispan cache) each list only their own. | `8` |
+| `KEYCLOAK_LOGOUT_CLEAN_PROBES` | `logout_user` keeps probing — each probe on its own connection lists the sessions and logs the user out on the node it reached — until this many probes in a row see no session. The logout is sent on every probe: it also sets the user's `notBefore` in the database, which all nodes check, and the tool reports it. | `10` |
+| `KEYCLOAK_LOGOUT_MAX_PROBES` | Upper bound on `logout_user` probes; if sessions are still seen at the bound, the tool says so (⚠️) instead of reporting success. | `40` |
 
 ### KeyCloak client setup
 
@@ -150,7 +153,7 @@ enabled (below), `apply_group_changes` is a fifth.
 | `reset_password` | `PUT /users/{id}/reset-password` |
 | `reset_passwords_batch` | the same call, once per CSV row |
 | `set_user_enabled` | `PUT /users/{id}` with `enabled` toggled |
-| `logout_user` | `POST /users/{id}/logout` |
+| `logout_user` | `GET /users/{id}/sessions` + `POST /users/{id}/logout`, repeated on new connections (see `KEYCLOAK_LOGOUT_CLEAN_PROBES`) |
 
 All four need `manage-users` on the Service Account. **Leave that role off and the
 server is read-only**: those four tools fail with `403` and every other tool keeps
