@@ -65,9 +65,19 @@ containment, in the order that matters:
    the response reports the session count and says to run `logout_user` next
    — the tool tells you the follow-up step rather than assuming you know it.
 2. **`logout_user(username)`** removes all of that user's active sessions,
-   forcing re-authentication everywhere. Reports how many sessions it removed;
-   a call against a user with none is a no-op that says so rather than
-   erroring.
+   forcing re-authentication everywhere. It always sends at least one logout,
+   even when no session is listed: that call also sets the user's `notBefore`
+   in the database, so every node rejects tokens issued before it, and the
+   result reports that time. Behind a load balancer whose KeyCloak nodes do
+   not share sessions, it keeps probing on fresh connections — logging the
+   user out on whichever node still lists a session — until
+   `KEYCLOAK_LOGOUT_CLEAN_PROBES` probes in a row (default 10) see none, at
+   most `KEYCLOAK_LOGOUT_MAX_PROBES` (default 40). It reports how many
+   distinct sessions it removed. It does not claim success when it could not
+   confirm it: if sessions are still seen at the bound, the result starts with
+   ⚠️ and says so; if `KEYCLOAK_DEADLINE` runs out or a request fails first,
+   it starts with ⚠️ and says verification is incomplete. Both report what
+   was done so far and tell you to run `logout_user` again.
 3. **`reset_password(username, password, temporary=False)`** sets a new
    password. `temporary=True` forces a change on next login — the right choice
    for a reset you are handing to the user, not one you intend to use yourself.

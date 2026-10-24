@@ -46,6 +46,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | `get_config_changes` | 保存した日次スナップショットから realm の設定がどう変わったか（「設定のスナップショット」参照）。読み取りのみ。`baseline_date` で比べる日を選べる |
 | `get_login_failures_by_ip` | 送信元 IP 別のログイン失敗数（`KEYCLOAK_SITES_INI` 設定時は拠点ラベル付き） |
 | `get_ip_activity` | 送信元 IP 1件の全活動を漏れなく調査：成功/失敗件数、対象ユーザ・クライアント、タイムライン。構造化 JSON を返す |
+| `spray_check` | 突破されたアカウントの一覧まで出すパスワードスプレー検知。10 人以上の異なるユーザーが試行し、ログイン成功率が 20 % 未満の外部 IP をすべてスプレー元とし、その IP からのログイン成功（証拠の組 `time / ip / username / user_id / client_id`）を突破の候補とする。各行に `confidence` が付く。`high` は突破の判定。`low` は件数の規則が共有出口（学校の NAT、家庭の回線、VDI）で発火したことを示し、`user_success_rate`（ログインできた異なるユーザー数 ÷ 異なるユーザー数、0.2 以上）、`failure_concentration`（1 つのユーザー名に集中した失敗の割合、0.5 以上）、`KEYCLOAK_KNOWN_EGRESS` への一致のいずれかが根拠になる。`low` のログインは本人に確かめるもので、公表しない。`top_failed_users` と `not_found_domains` で、誰が失敗し続けたか、どの打ち間違えたドメインが `user_not_found` を生んだかがわかる。形の決まった JSON を返し、期間を途中で打ち切ったときは `complete: false` |
 | `detect_login_loops` | 短時間に大量ログインしているユーザを検出（リダイレクトループの発見に） |
 
 ### イベント
@@ -84,7 +85,7 @@ Service Account（**Client Credentials Grant**）で認証するので、人間�
 | ツール | 説明 |
 |------|------|
 | `health_check` | 稼働中のサーババージョンを報告し、KeyCloak バックエンドへの到達性とサービスアカウントの認証可否を確認する。軽量（トークン取得1回のみ・ユーザ／イベント／セッションのスキャンは行わない）。`status`、`auth`、設定済み URL／Realm を含む固定キーの dict を返す。各フィールドが取りうる値はツール自身の description が列挙しており、列挙はそこ1か所にのみ置く。 |
-| `daily_brief` | 朝のワンショット健全性チェック。ログイン統計・ブルートフォース IP・アクティブセッション・パスワード更新・管理者操作・設定の変更（ロール、ロールの割り当て、認証フロー、クライアントスコープ、プロトコルマッパー、コンポーネント、realm への管理操作と、`KEYCLOAK_STATE_DIR` があればスナップショットとの比較。どちらも `[CONFIG]` で示す）・ロールの付いたグループへの追加（読み取り専用の `query-*`／`view-*` 以外の `realm-management` ロールが付くグループなら `[PRIVILEGE]`）を1つの Markdown サマリーにまとめる。`ip_failure_threshold`（既定 50）件以上の失敗 IP は **WARNING**、API エラーは **CRITICAL** として表示。`since_hours` で遡及時間を指定（既定 18 h）。 |
+| `daily_brief` | 朝のワンショット健全性チェック。ログイン統計・ブルートフォース IP・スプレー検知（`spray_check` と同じ規則で、突破されたアカウントと証拠を出す）・アクティブセッション・パスワード更新・管理者操作・設定の変更（ロール、ロールの割り当て、認証フロー、クライアントスコープ、プロトコルマッパー、コンポーネント、realm への管理操作と、`KEYCLOAK_STATE_DIR` があればスナップショットとの比較。どちらも `[CONFIG]` で示す）・ロールの付いたグループへの追加（読み取り専用の `query-*`／`view-*` 以外の `realm-management` ロールが付くグループなら `[PRIVILEGE]`）を1つの Markdown サマリーにまとめる。`ip_failure_threshold`（既定 50）件以上の失敗 IP とスプレー元は **WARNING**、API エラーは **CRITICAL** として表示。`since_hours` で遡及時間を指定（既定 18 h）。 |
 
 ## インストール
 
@@ -118,6 +119,7 @@ pip install -e .
 | `KEYCLOAK_CLIENT_ID` | Service Account のクライアント ID | *必須* |
 | `KEYCLOAK_CLIENT_SECRET` | クライアントシークレット | *必須* |
 | `KEYCLOAK_SITES_INI` | IP→拠点名ラベル用の INI ファイル（後述） | *未設定* |
+| `KEYCLOAK_KNOWN_EGRESS` | 既知の共有出口（VDI・VPN 集約装置・提携先のプロキシなど）の CIDR をカンマ区切りで指定。`spray_check` は該当する IP に `known_egress: true` を付けて `confidence: low` にする。除外はしない | *未設定* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | `date_from` 省略時のイベント検索範囲（時間）。`0` で全履歴スキャン（イベント数が多いレルムではハングの原因になる）。 | `24` |
 | `KEYCLOAK_DEADLINE` | 重いイベント/TOTP 系ツール1回あたりの実時間バジェット（秒）。広い窓や大規模レルムで超過しそうなときは、クライアントの ~60秒ゲートウェイタイムアウトを超えて KeyCloak を叩き続ける代わりに、途中で打ち切って**部分結果（⚠️ 警告付き）**を返す。`0`/負の値で無効。 | `45` |
 | `KEYCLOAK_MAX_EVENTS` | イベント系ツールの1ページングあたりのイベント取得上限（激遅化する深いオフセットの深さも制限）。上限超過時は部分結果を開示。`0`/負の値で無効。 | `200000` |

@@ -40,11 +40,21 @@ uv sync          # または: pip install -e .
 | `KEYCLOAK_CLIENT_ID` | サービスアカウントのクライアント ID | *必須* |
 | `KEYCLOAK_CLIENT_SECRET` | クライアントシークレット | *必須* |
 | `KEYCLOAK_SITES_INI` | IP のサイトラベル付け用 INI ファイル | 未設定 |
+| `KEYCLOAK_KNOWN_EGRESS` | 既知の共有出口（VDI・VPN 集約装置・提携先のプロキシなど）の CIDR をカンマ区切りで指定。`spray_check` は該当する IP に `known_egress: true` を付けて `confidence: low` にする。除外はしない | *未設定* |
 | `KEYCLOAK_DEFAULT_DATE_FROM_HOURS` | `date_from` 省略時のイベント系ツールの既定ルックバック。`0` で全履歴走査（大規模レルムでハングしうる） | `24` |
 | `KEYCLOAK_DEADLINE` | 重いイベント/TOTP ツールの1呼び出しあたりの時間予算（秒）。`0` 以下で無効化 | `45` |
 | `KEYCLOAK_MAX_EVENTS` | 1呼び出しで取得するイベント件数の上限。`0` 以下で無効化 | `200000` |
 | `KEYCLOAK_MAX_USERS` | `get_totp_users` の `max_users` 引数が `0` のときに走査するユーザー数の既定上限。`0` 以下で無効化 | `5000` |
 | `KEYCLOAK_USER_ATTRIBUTE_WHITELIST` | `get_user` が出力してよいカスタム属性キーのカンマ区切りリスト。未設定なら `get_user` は `attributes` を取得も表示もしない。クレデンシャルらしき名前のキーはホワイトリストに入れてもブロックされる（安全弁であり保証ではない） | *未設定* |
+| `KEYCLOAK_SESSION_PROBES` | `get_user_sessions`（と `set_user_enabled` が数える残りのセッション）で、別々の接続で取った一覧を重ねる回数。ロードバランサの後ろでセッションを共有しない KeyCloak の各台に備える | `8` |
+| `KEYCLOAK_LOGOUT_CLEAN_PROBES` | `logout_user` は新しい接続で試行を重ね、続けてこの回数セッションが見えなくなるまで繰り返す。セッションを共有している構成では、これと `KEYCLOAK_SESSION_PROBES` を `1` にする | `10` |
+| `KEYCLOAK_LOGOUT_MAX_PROBES` | `logout_user` の試行の上限。上限でまだセッションが見えるときは成功と言わず ⚠️ で伝える | `40` |
+| `KEYCLOAK_STATE_DIR` | 設定の日次スナップショット（`<dir>/config-snapshots`）を置くディレクトリ。`daily_brief` が保存し、`get_config_changes` が比べる。未設定ならスナップショットは取らない | *未設定* |
+| `KEYCLOAK_GROUP_WRITE_ROOT` | 任意で有効にするグループ変更ツール（`plan_group_changes`・`apply_group_changes`）を登録し、対象をこの絶対パス（例 `/Staff`）より下のグループに限る。未設定・空・不正な値のときはツールを登録しない。承認の手順を前段に置く配備でだけ設定する | *未設定* |
+| `KEYCLOAK_PROTECTED_GROUPS` | グループ変更ツールが追加・削除を拒否するグループの完全パス（`;` 区切り、配下も含む）。不正な項目があるとグループ変更ツールごと無効にする | *未設定* |
+| `KEYCLOAK_GROUP_BATCH_MAX` | グループ変更1回あたりの最大行数 | `30` |
+| `KEYCLOAK_GROUP_MODE` | `multi`（ユーザーは複数のグループに所属できる）または `single`（グループに追加すると他の所属がすべて外れる）。それ以外の値ではグループ変更ツールを無効にする | `multi` |
+| `KEYCLOAK_GROUP_DEADLINE` | グループ変更ツールの実時間バジェット（秒）。未設定なら `KEYCLOAK_DEADLINE` | *未設定* |
 
 ## 何かに組み込む前に確認する
 
