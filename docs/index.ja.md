@@ -14,15 +14,19 @@
 | ユーザー | `count_users`、`search_users`、`get_user`、`get_user_sessions`、`logout_user`、`set_user_enabled` |
 | パスワード | `reset_password`、`reset_passwords_batch` |
 | MFA | `get_user_credentials`、`get_totp_users` |
-| グループ | `list_user_groups`、`list_users_by_group` |
-| セキュリティ | `get_brute_force_status`、`get_realm_security_defenses`、`get_login_failures_by_ip`、`get_ip_activity`、`detect_login_loops` |
+| グループ | `list_user_groups`、`list_users_by_group`。任意で有効にする `plan_group_changes`、`apply_group_changes` |
+| セキュリティ | `get_brute_force_status`、`get_realm_security_defenses`、`get_config_changes`、`get_login_failures_by_ip`、`get_ip_activity`、`spray_check`、`detect_login_loops` |
 | イベント | `get_events`、`get_login_stats`、`get_login_stats_by_hour`、`get_login_stats_by_client`、`get_password_update_events` |
 | 管理イベント | `get_admin_events`、`get_user_attribute_history` |
 | セッション・クライアント | `get_session_stats`、`get_client_sessions`、`list_clients`、`get_client`、`get_realm_roles` |
 | 朝の点検 | `health_check`、`daily_brief` |
 
 **書き込みを行うのは4本だけです。** `reset_password`・`reset_passwords_batch`・
-`logout_user`・`set_user_enabled`。それ以外はすべて読み取り専用です。各書き込み
+`logout_user`・`set_user_enabled`。それ以外はすべて読み取り専用です。
+`KEYCLOAK_GROUP_WRITE_ROOT` を設定すると、任意で有効にするグループ変更ツール
+`plan_group_changes`（読み取りのみ）と `apply_group_changes` が登録され、
+`apply_group_changes` が5本目の書き込みツールになります。未設定ならどちらも
+存在しません。各書き込み
 ツールが実際に何をし、どんな場面で使うべきかは
 [セキュリティ調査](investigation.ja.md) を参照してください。
 

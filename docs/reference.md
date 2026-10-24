@@ -40,11 +40,14 @@ timeout.
 | `get_totp_users(max_users=0)` | Realm-wide TOTP adoption. N+1 (one call per user); bounded by `max_users` or `KEYCLOAK_MAX_USERS` |
 | `list_user_groups(username)` | Groups a user belongs to |
 | `list_users_by_group(group_name, max_results=100)` | Members of a group |
+| `plan_group_changes(changes)` | Opt-in, registered only when `KEYCLOAK_GROUP_WRITE_ROOT` is set. Read-only check of a batch of group moves (`username`, `remove`, `add` as full paths); returns per-row status, the net role gains and losses, and a `digest` to show a human for approval |
+| `apply_group_changes(changes, expected_digest)` | **Writes.** Opt-in, registered only when `KEYCLOAK_GROUP_WRITE_ROOT` is set. Applies an approved plan: re-plans and changes nothing unless the fresh digest matches, then adds before removing per user with read-back; returns `applied` (`yes` / `no` / `partial` / `unknown`) and a `reverse` proposal. The digest is a staleness check, not an approval token |
 | `get_brute_force_status(username)` | Whether a user is currently locked by brute-force detection |
 | `get_realm_security_defenses()` | Brute-force policy and thresholds, password policy, browser security headers |
 | `get_config_changes(baseline_date="")` | What changed in the realm configuration since a stored daily snapshot (needs `KEYCLOAK_STATE_DIR`; snapshots are written by `daily_brief`) |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | Failure counts ranked by source IP |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | Exhaustive per-IP investigation (structured JSON) |
+| `spray_check(hours=24, min_users=10, max_success_rate=0.2, min_report_users=3, max_resolves=200, max_user_success_rate=0.2, max_failure_concentration=0.5)` | Password-spray detection: external IPs with at least `min_users` distinct users and a success rate below `max_success_rate`, with their successful logins as breach candidates (evidence tuples). Only `confidence: high` rows are a breach verdict; `low` marks a shared egress or a `KEYCLOAK_KNOWN_EGRESS` match. Fixed-shape JSON; `complete: false` when the scan was cut short |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | Users logging in faster than `threshold` per `window_seconds` |
 | `get_events(event_type, username, client_id, ip_address, date_from, date_to, max_results=50)` | Filtered event search; username resolved to user ID internally |
 | `get_login_stats(date_from, date_to)` | Success/failure totals, fully paginated |
@@ -58,7 +61,7 @@ timeout.
 | `list_clients()` | SAML and OIDC clients in the realm |
 | `get_client(client_id)` | One client's configuration, including its authentication flow overrides (the per-SP MFA switch). Omits `attributes` and `protocolMappers`, so no client secret or SAML signing material reaches tool output. |
 | `get_realm_roles()` | Realm-level roles |
-| `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, sessions, password updates, admin events, configuration changes |
+| `daily_brief(since_hours=18, ip_failure_threshold=50)` | Morning summary: login stats, brute-force IPs, spray check, sessions, password updates, admin events, configuration changes |
 
 See [Security investigation](investigation.md) for what the write tools
 actually do, how to read `get_ip_activity`'s output, and the deadline /
@@ -67,7 +70,9 @@ partial-result mechanism shared by the heavy scans.
 ## `daily_brief`
 
 One Markdown report covering login stats, IPs over `ip_failure_threshold`
-failures (flagged `WARNING`), active sessions, password updates, and admin
+failures (flagged `WARNING`), a spray check (the `spray_check` rule; high-confidence
+matches are flagged `[SPRAY]` with the breached accounts and their evidence,
+low-confidence ones `[SPRAY?]` as logins to verify), active sessions, password updates, and admin
 events, all within `since_hours` (default 18 — roughly the previous afternoon
 for a 09:00 morning run). A Configuration section lists admin events on roles,
 role mappings, flows, client scopes, protocol mappers, components and the realm,

@@ -38,11 +38,14 @@
 | `get_totp_users(max_users=0)` | レルム全体の TOTP 導入率。N+1（ユーザーごとに1呼び出し）。`max_users` または `KEYCLOAK_MAX_USERS` で上限 |
 | `list_user_groups(username)` | ユーザーが所属するグループ |
 | `list_users_by_group(group_name, max_results=100)` | グループのメンバー |
+| `plan_group_changes(changes)` | 任意で有効にするツールで、`KEYCLOAK_GROUP_WRITE_ROOT` を設定したときだけ登録される。グループ移動のバッチ（`username`・`remove`・`add` を完全パスで）を変更せずに確かめる。行ごとの状態、ロールの増減、承認する人に見せる `digest` を返す |
+| `apply_group_changes(changes, expected_digest)` | **書き込み。** 任意で有効にするツールで、`KEYCLOAK_GROUP_WRITE_ROOT` を設定したときだけ登録される。承認された計画を実行する。計画を取り直し、新しい digest が一致しなければ何も変えない。一致すればユーザーごとに追加してから削除し、書いたあとに読み戻す。`applied`（`yes`／`no`／`partial`／`unknown`）と、元に戻す案 `reverse` を返す。digest は計画以後に変化が無いことの確認で、承認の証ではない |
 | `get_brute_force_status(username)` | ユーザーがブルートフォース検知によりロック中か |
 | `get_realm_security_defenses()` | ブルートフォース対策の方針と閾値、パスワードポリシー、ブラウザセキュリティヘッダー |
 | `get_config_changes(baseline_date="")` | 保存した日次スナップショットから realm の設定がどう変わったか（`KEYCLOAK_STATE_DIR` が要る。スナップショットは `daily_brief` が保存する） |
 | `get_login_failures_by_ip(date_from, date_to, top=20)` | 送信元 IP 別の失敗数ランキング |
 | `get_ip_activity(ip_address, event_types, date_from, date_to, max_timeline=200)` | 1 IP の網羅的な調査（構造化 JSON） |
+| `spray_check(hours=24, min_users=10, max_success_rate=0.2, min_report_users=3, max_resolves=200, max_user_success_rate=0.2, max_failure_concentration=0.5)` | パスワードスプレー検知。異なるユーザーが `min_users` 人以上で成功率が `max_success_rate` 未満の外部 IP を挙げ、その IP からのログイン成功を突破の候補（証拠の組）として出す。突破の判定は `confidence: high` の行だけで、`low` は共有出口か `KEYCLOAK_KNOWN_EGRESS` への一致を示す。形の決まった JSON で、走査を途中で打ち切ったときは `complete: false` |
 | `detect_login_loops(date_from, date_to, threshold=10, window_seconds=60, top=20)` | `window_seconds` 内に `threshold` 回を超えてログインしたユーザー |
 | `get_events(event_type, username, client_id, ip_address, date_from, date_to, max_results=50)` | 絞り込みイベント検索。ユーザー名は内部でユーザー ID に解決される |
 | `get_login_stats(date_from, date_to)` | 成功/失敗の総数（全件ページング） |
@@ -56,7 +59,7 @@
 | `list_clients()` | レルムの SAML / OIDC クライアント |
 | `get_client(client_id)` | クライアント1件の設定。認証フローのオーバーライド（SP 単位の MFA 切り替え）を含む。`attributes` と `protocolMappers` は出力しないので、クライアントシークレットや SAML の署名鍵はツール出力に出ない。 |
 | `get_realm_roles()` | レルムレベルのロール |
-| `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・セッション・パスワード更新・管理イベント・設定の変更 |
+| `daily_brief(since_hours=18, ip_failure_threshold=50)` | 朝のサマリー: ログイン統計・ブルートフォース IP・スプレー検知・セッション・パスワード更新・管理イベント・設定の変更 |
 
 書き込みツールが実際に何をするか、`get_ip_activity` の出力の読み方、重い走査が
 共有する deadline / 部分結果の仕組みは [セキュリティ調査](investigation.ja.md)
@@ -65,7 +68,9 @@
 ## `daily_brief`
 
 ログイン統計・`ip_failure_threshold` 件を超える失敗を出した IP（`WARNING` として
-フラグ）・アクティブなセッション・パスワード更新・管理イベントを、`since_hours`
+フラグ）・スプレー検知（`spray_check` と同じ規則。確度の高いものは突破された
+アカウントと証拠を添えて `[SPRAY]`、確度の低いものは本人に確かめるログインとして
+`[SPRAY?]`）・アクティブなセッション・パスワード更新・管理イベントを、`since_hours`
 （既定18 — 09:00 に実行する場合ほぼ前日午後をカバー）の範囲で1つの Markdown
 レポートにまとめます。バックエンド接続に失敗した場合、内訳の欠けた部分的な
 レポートではなく、レポート全体が `## CRITICAL — <ExceptionType>` になります。
