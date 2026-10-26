@@ -139,6 +139,19 @@ GUI から起動した場合は通っていないことがあります。プラ�
 `claude_desktop_config.json` も同じ `env` ブロックを `command` の下に置きます
 （`type` フィールドは無し）。完全な例はリポジトリの README を参照してください。
 
+### Codex
+
+```bash
+codex mcp add keycloak-mcp \
+  --env KEYCLOAK_URL=https://keycloak.example.com \
+  --env KEYCLOAK_REALM=my-realm \
+  --env KEYCLOAK_CLIENT_ID=keycloak-mcp \
+  --env KEYCLOAK_CLIENT_SECRET=your-secret \
+  -- keycloak-mcp
+```
+
+stdio サーバーを起動できる MCP クライアントなら、どれでも同じ形で使えます。コマンドに `keycloak-mcp` を指定し、環境変数 `KEYCLOAK_*` を設定してください。
+
 ### 直接実行
 
 ```bash
