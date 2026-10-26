@@ -141,6 +141,21 @@ shell usually has it, but a GUI-launched app may not; install
 `claude_desktop_config.json` takes the same `env` block under `command`
 without the `type` field. See the repository README for the full example.
 
+### Codex
+
+```bash
+codex mcp add keycloak-mcp \
+  --env KEYCLOAK_URL=https://keycloak.example.com \
+  --env KEYCLOAK_REALM=my-realm \
+  --env KEYCLOAK_CLIENT_ID=keycloak-mcp \
+  --env KEYCLOAK_CLIENT_SECRET=your-secret \
+  -- keycloak-mcp
+```
+
+Any other MCP client that launches stdio servers works the same way: give it
+`keycloak-mcp` as the command and set the `KEYCLOAK_*` variables in its
+environment.
+
 ### Direct execution
 
 ```bash

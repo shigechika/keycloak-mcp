@@ -157,7 +157,7 @@ enabled (below), `apply_group_changes` is a fifth.
 
 All four need `manage-users` on the Service Account. **Leave that role off and the
 server is read-only**: those four tools fail with `403` and every other tool keeps
-working, so a realm can be handed to Claude for investigation without granting any
+working, so a realm can be handed to an AI assistant for investigation without granting any
 ability to modify it. Grant `manage-users` only when account recovery or
 containment is part of the job.
 
@@ -366,6 +366,21 @@ In `claude_desktop_config.json`:
   }
 }
 ```
+
+### Codex
+
+```bash
+codex mcp add keycloak-mcp \
+  --env KEYCLOAK_URL=https://keycloak.example.com \
+  --env KEYCLOAK_REALM=my-realm \
+  --env KEYCLOAK_CLIENT_ID=keycloak-mcp \
+  --env KEYCLOAK_CLIENT_SECRET=your-secret \
+  -- keycloak-mcp
+```
+
+Any other MCP client that launches stdio servers works the same way: give it
+`keycloak-mcp` as the command and set the `KEYCLOAK_*` variables in its
+environment.
 
 ### From a shell
 
