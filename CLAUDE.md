@@ -21,8 +21,8 @@ uv run ruff check .               # lint
 uv run ruff format --check .      # format check
 ```
 
-This mirrors `.github/workflows/ci.yml` (matrix: Python 3.10–3.14 on
-Ubuntu, plus one Windows 3.12 job to catch stdio newline regressions).
+This mirrors `.github/workflows/ci.yml` (matrix: Python 3.11–3.15 on
+Ubuntu, plus one Windows job on the latest 3.x to catch stdio newline regressions).
 Plain-`pip` equivalents are documented in README.md's Development section.
 
 ## Architecture
@@ -75,7 +75,7 @@ credential attributes.
 - Public repository: comments, commit messages, and docs in English.
   README.md / README.ja.md is a maintained bilingual pair.
 - Docstrings in English.
-- Python 3.10+ (`requires-python = ">=3.10"` in pyproject.toml).
+- Python 3.11+ (`requires-python = ">=3.11"` in pyproject.toml).
 - Tests: `tests/test_client.py` mocks HTTP with `respx`; `tests/test_server.py`
   exercises tool functions directly with `unittest.mock`/`monkeypatch`;
   `tests/test_stdio_smoke.py` spawns the server as a subprocess to guard

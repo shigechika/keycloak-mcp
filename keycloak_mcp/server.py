@@ -16,7 +16,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -33,7 +33,7 @@ from .sites import SiteClassifier
 
 def _epoch_to_local_dt(epoch_ms: int | str) -> datetime:
     """Convert epoch milliseconds to an aware local datetime. Raises ValueError/TypeError on bad input."""
-    return datetime.fromtimestamp(int(epoch_ms) / 1000, tz=timezone.utc).astimezone()
+    return datetime.fromtimestamp(int(epoch_ms) / 1000, tz=UTC).astimezone()
 
 
 def _format_ts(epoch_ms: int | str) -> str:
@@ -1401,13 +1401,13 @@ def get_login_stats_by_hour(date_from: str = "", date_to: str = "") -> str:
     failure_by_hour: Counter[int] = Counter()
     for e in success:
         try:
-            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=timezone.utc).astimezone().hour
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=UTC).astimezone().hour
             success_by_hour[hour] += 1
         except (KeyError, ValueError, TypeError):
             pass
     for e in failure:
         try:
-            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=timezone.utc).astimezone().hour
+            hour = datetime.fromtimestamp(int(e["time"]) / 1000, tz=UTC).astimezone().hour
             failure_by_hour[hour] += 1
         except (KeyError, ValueError, TypeError):
             pass
@@ -1751,7 +1751,7 @@ def spray_check(
             marks the row ``confidence: low`` (default 0.5).
     """
     hours = max(1, hours)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     since = now - timedelta(hours=hours)
     date_from = since.astimezone().strftime("%Y-%m-%d")
     deadline = deadline_after(_deadline_seconds())
@@ -2732,7 +2732,7 @@ def daily_brief(
         ip_failure_threshold: Login failures from a single IP that triggers a
                               WARNING (default 50).
     """
-    now_str = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
+    now_str = datetime.now(tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
     date_from = (datetime.now() - timedelta(hours=since_hours)).strftime("%Y-%m-%d")
 
     # One deadline SHARED across all four paginations so the whole brief stays under the
@@ -2740,7 +2740,7 @@ def daily_brief(
     # reports a lower bound).
     deadline = deadline_after(_deadline_seconds())
     cap = _max_events()
-    since_ms = int((datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000)
+    since_ms = int((datetime.now(tz=UTC) - timedelta(hours=since_hours)).timestamp() * 1000)
     # The configuration check runs first, capped at _CONFIG_BUDGET_SECONDS of the shared
     # deadline: the event reads that follow cannot starve it, and it cannot starve them.
     config_warnings, config_lines = _config_brief(date_from, since_ms, deadline)
