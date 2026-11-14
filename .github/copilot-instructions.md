@@ -21,8 +21,8 @@ uv run pytest -v
 ```
 
 This mirrors `.github/workflows/ci.yml`: a `lint` job (ruff check +
-format check) and a `test` job matrixed over Python 3.10–3.14 on Ubuntu,
-plus one Windows 3.12 job specifically to catch stdio newline
+format check) and a `test` job matrixed over Python 3.11–3.15 on Ubuntu,
+plus one Windows job on the latest 3.x specifically to catch stdio newline
 regressions (`modelcontextprotocol/python-sdk#2433`). Ruff **does** run
 in CI here — don't hand-flag formatting/import-order issues it already
 enforces; focus review comments on things CI can't catch.
